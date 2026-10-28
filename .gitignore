@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime data and logs
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.sqlite
+logs/
+*.log
+
+# Test / lint caches
+.pytest_cache/
+pytest-of-*/
+.rag-tmp-*/
+.check-*/
+data/pytest-runtime/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.ruff_cache/
+.mypy_cache/
+.benchmarks/
+
+# Evaluation artifacts; the small committed baseline is the exception.
+eval/results/*.json
+!eval/results/baseline.json
+eval/results/*.tmp
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local notes
+*.local.md
+scratch/
