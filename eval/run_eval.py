@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -27,6 +28,14 @@ from app.knowledge.retriever import Retriever
 from app.rag.generator import build_generator
 from app.rag.pipeline import RAGPipeline
 from app.services.document_service import DocumentService
+
+logger = logging.getLogger("rag_lab.eval")
+
+
+def _emit(message: str) -> None:
+    """Write user-facing or machine-readable output to stdout."""
+
+    sys.stdout.write(f"{message}\n")
 
 
 def parse_args() -> argparse.Namespace:
@@ -75,6 +84,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
     settings = build_settings(
         database_path=args.database,
         sample_docs_dir=PROJECT_ROOT / "data" / "sample_docs",
@@ -93,10 +103,11 @@ def main() -> int:
 
     if not args.no_seed:
         seeded = document_service.seed_sample_documents()
-        print(
-            f"corpus: ingested={seeded.ingested} updated={seeded.updated} "
-            f"skipped={seeded.skipped}",
-            file=sys.stderr,
+        logger.info(
+            "corpus: ingested=%s updated=%s skipped=%s",
+            seeded.ingested,
+            seeded.updated,
+            seeded.skipped,
         )
 
     dataset = load_dataset(args.dataset)
@@ -108,41 +119,41 @@ def main() -> int:
     output_path = write_report(report, args.output)
 
     if args.json:
-        print(json.dumps(report.model_dump(mode="json"), ensure_ascii=False, indent=2))
+        _emit(json.dumps(report.model_dump(mode="json"), ensure_ascii=False, indent=2))
     else:
-        print(render_summary(report))
-        print(f"report: {output_path}")
+        _emit(render_summary(report))
+        _emit(f"report: {output_path}")
 
     if args.baseline:
         baseline = load_report(args.baseline)
-        print("baseline comparison:")
+        _emit("baseline comparison:")
         for row in compare_reports(report, baseline):
-            print(f"  {row}")
+            _emit(f"  {row}")
 
     exit_code = 0
     if (
         args.fail_under_pass_rate is not None
         and report.metrics.pass_rate < args.fail_under_pass_rate
     ):
-        print(
-            f"quality gate failed: pass_rate {report.metrics.pass_rate:.3f} "
-            f"< {args.fail_under_pass_rate:.3f}",
-            file=sys.stderr,
+        logger.error(
+            "quality gate failed: pass_rate %.3f < %.3f",
+            report.metrics.pass_rate,
+            args.fail_under_pass_rate,
         )
         exit_code = 1
     if (
         args.fail_under_hit_rate is not None
         and report.metrics.retrieval_hit_rate < args.fail_under_hit_rate
     ):
-        print(
-            f"quality gate failed: retrieval_hit_rate "
-            f"{report.metrics.retrieval_hit_rate:.3f} < {args.fail_under_hit_rate:.3f}",
-            file=sys.stderr,
+        logger.error(
+            "quality gate failed: retrieval_hit_rate %.3f < %.3f",
+            report.metrics.retrieval_hit_rate,
+            args.fail_under_hit_rate,
         )
         exit_code = 1
     if args.require_quality_gate and not report.quality_gate.passed:
         failed = [name for name, passed in report.quality_gate.checks.items() if not passed]
-        print(f"quality gate failed: {', '.join(failed)}", file=sys.stderr)
+        logger.error("quality gate failed: %s", ", ".join(failed))
         exit_code = 1
     return exit_code
 

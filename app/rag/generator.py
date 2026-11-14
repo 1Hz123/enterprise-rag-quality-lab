@@ -14,6 +14,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Protocol
+from urllib.parse import urlparse
 
 from app.config import Settings
 from app.knowledge.embeddings import lexical_tokens
@@ -205,6 +206,9 @@ class OpenAICompatibleGenerator:
         timeout_seconds: float = 45.0,
         max_answer_chars: int = 1200,
     ) -> None:
+        parsed = urlparse(base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise GenerationError("OPENAI_BASE_URL must be an http(s) URL")
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -234,7 +238,12 @@ class OpenAICompatibleGenerator:
         )
 
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            # Scheme and host are validated in __init__; this is an
+            # operator-configured endpoint, not user input.
+            with urllib.request.urlopen(  # nosec B310
+                request,
+                timeout=self.timeout_seconds,
+            ) as response:
                 body = json.loads(response.read().decode("utf-8"))
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             raise GenerationError(f"generator request failed: {type(exc).__name__}") from exc

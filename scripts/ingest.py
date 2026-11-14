@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -22,11 +23,19 @@ from app.config import build_settings
 from app.db import Database
 from app.knowledge.embeddings import build_embeddings
 from app.knowledge.loader import DocumentLoadError, load_file
-from app.schemas import DocumentCreate
 from app.services.document_service import (
     DocumentService,
     DuplicateDocumentError,
+    document_create_from_loaded,
 )
+
+logger = logging.getLogger("rag_lab.ingest")
+
+
+def _emit(message: str) -> None:
+    """Write user-facing or machine-readable output to stdout."""
+
+    sys.stdout.write(f"{message}\n")
 
 
 def parse_args() -> argparse.Namespace:
@@ -54,6 +63,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
     overrides: dict[str, object] = {}
     if args.database:
         overrides["database_path"] = args.database
@@ -80,15 +90,7 @@ def main() -> int:
                 args.source,
                 max_bytes=settings.max_document_bytes,
             )
-            detail = service.create_document(
-                DocumentCreate(
-                    title=loaded.title,
-                    content=loaded.content,
-                    source=loaded.source,
-                    content_type=loaded.content_type,
-                    metadata=loaded.metadata,
-                )
-            )
+            detail = service.create_document(document_create_from_loaded(loaded))
             payload = {
                 "ingested": 1,
                 "updated": 0,
@@ -97,21 +99,21 @@ def main() -> int:
                 "database": str(settings.database_path),
             }
         else:
-            print(f"source not found: {args.source}", file=sys.stderr)
+            logger.error("source not found: %s", args.source)
             return 2
     except DuplicateDocumentError as exc:
-        print(f"duplicate document skipped: {exc.document_id}", file=sys.stderr)
+        logger.error("duplicate document skipped: %s", exc.document_id)
         return 3
     except (DocumentLoadError, ValueError) as exc:
-        print(f"ingestion failed: {exc}", file=sys.stderr)
+        logger.error("ingestion failed: %s", exc)
         return 1
 
     counts = database.counts()
     payload["counts"] = counts
     if args.json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        _emit(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
-        print(
+        _emit(
             f"done: ingested={payload.get('ingested', 0)} "
             f"updated={payload.get('updated', 0)} skipped={payload.get('skipped', 0)} "
             f"reindexed={payload.get('reindexed', 0)} "

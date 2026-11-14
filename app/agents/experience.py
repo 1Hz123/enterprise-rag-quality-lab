@@ -57,10 +57,13 @@ class ExperienceService:
         chunk_ids = [citation.chunk_id for citation in citations]
         if not chunk_ids:
             return None
-        placeholders = ",".join("?" for _ in chunk_ids)
         rows = self.db.fetch_all(
-            f"SELECT id, content FROM chunks WHERE id IN ({placeholders})",
-            tuple(chunk_ids),
+            """
+            SELECT id, content
+            FROM chunks
+            WHERE id IN (SELECT value FROM json_each(?))
+            """,
+            (_json(chunk_ids),),
         )
         if len(rows) != len(set(chunk_ids)):
             return None

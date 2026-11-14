@@ -17,10 +17,14 @@ build/
 !.env.example
 
 # Runtime data and logs
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
 data/*.db
 data/*.db-wal
 data/*.db-shm
-data/*.sqlite
 logs/
 *.log
 
@@ -30,6 +34,7 @@ pytest-of-*/
 .rag-tmp-*/
 .check-*/
 data/pytest-runtime/
+.audit/
 .coverage
 .coverage.*
 htmlcov/

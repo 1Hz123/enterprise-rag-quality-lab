@@ -354,24 +354,34 @@ class DocumentService:
     ) -> DocumentList:
         limit = max(1, min(limit, 100))
         offset = max(0, offset)
-        conditions: list[str] = []
-        params: list[Any] = []
         if as_of:
-            conditions.append(
-                "(effective_from IS NULL OR effective_from <= ?) "
-                "AND (effective_until IS NULL OR effective_until >= ?)"
+            as_of_value = as_of.isoformat()
+            rows = self.db.fetch_all(
+                """
+                SELECT *
+                FROM documents
+                WHERE (effective_from IS NULL OR effective_from <= ?)
+                  AND (effective_until IS NULL OR effective_until >= ?)
+                ORDER BY updated_at DESC, id
+                LIMIT ? OFFSET ?
+                """,
+                (as_of_value, as_of_value, limit, offset),
             )
-            params.extend([as_of.isoformat(), as_of.isoformat()])
-        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-
-        rows = self.db.fetch_all(
-            f"SELECT * FROM documents{where} ORDER BY updated_at DESC, id LIMIT ? OFFSET ?",
-            tuple([*params, limit, offset]),
-        )
-        total_row = self.db.fetch_one(
-            f"SELECT COUNT(*) AS n FROM documents{where}",
-            tuple(params),
-        )
+            total_row = self.db.fetch_one(
+                """
+                SELECT COUNT(*) AS n
+                FROM documents
+                WHERE (effective_from IS NULL OR effective_from <= ?)
+                  AND (effective_until IS NULL OR effective_until >= ?)
+                """,
+                (as_of_value, as_of_value),
+            )
+        else:
+            rows = self.db.fetch_all(
+                "SELECT * FROM documents ORDER BY updated_at DESC, id LIMIT ? OFFSET ?",
+                (limit, offset),
+            )
+            total_row = self.db.fetch_one("SELECT COUNT(*) AS n FROM documents")
         return DocumentList(
             items=[self._summary(row) for row in rows],
             total=int(total_row["n"]) if total_row else 0,

@@ -37,7 +37,7 @@
 - **反馈闭环**：用户评分可提升或抑制经验；低分经验会被删除。
 - **受控进化**：`POST /api/v1/organization/evolve` 在固定评测集上搜索覆盖率阈值，默认只给建议，显式 `apply=true` 才在当前进程生效。
 - **固定质量门禁**：来源命中率、MRR、关键词覆盖、引用准确率、拒答正确率、注入抵抗率和延迟。
-- **工程化交付**：FastAPI、Pydantic、SQLite、pytest、Ruff、GitHub Actions。
+- **工程化交付**：FastAPI、Pydantic、SQLite、pytest、Ruff、Dockerfile、GitHub Actions、依赖审计。
 - **可审计运行轨迹**：每个回答保存检索结果、智能体轨迹、引用、质量检查和经验使用情况。
 
 ## 快速开始
@@ -70,6 +70,15 @@ python -m pip install -e ".[dev]"
 cp .env.example .env
 uvicorn app.main:app --reload
 ```
+
+### 方式三：Docker
+
+```bash
+docker build -t enterprise-rag-quality-lab:0.3.1 .
+docker run --rm -p 8000:8000 enterprise-rag-quality-lab:0.3.1
+```
+
+镜像基于 `python:3.11-slim`，使用非 root 用户，暴露 8000，并带 `/health` 健康检查。详见 [Dockerfile](Dockerfile)。
 
 打开：
 
@@ -298,6 +307,24 @@ effective_from: 2026-01-01
 
 当前项目**不是**生产级安全边界：没有用户认证、租户隔离、文档级 ACL、速率限制、PII 自动脱敏和密钥托管。接生产前必须补齐。
 
+## 依赖、License 与漏洞审计
+
+- 运行时 21 个依赖：**0 个已知 CVE**。
+- 全依赖（含 dev/security）62 个依赖：**0 个已知 CVE**。
+- Bandit 对 `app/` 的静态扫描：**0 findings**。
+- 依赖 License：无 GPL/AGPL/LGPL；运行时全部为 MIT / Apache-2.0 / BSD / PSF。
+- `certifi` 的 MPL-2.0 只出现在开发依赖中，不进入运行时镜像。
+
+完整报告与复现命令见 [security-audit.md](docs/security-audit.md)；原始报告包括 [pip-audit-runtime.json](docs/audit/pip-audit-runtime.json)、[pip-audit-all.json](docs/audit/pip-audit-all.json)、[bandit.json](docs/audit/bandit.json) 和 [dependency-licenses-all.json](docs/audit/dependency-licenses-all.json)。
+
+```bash
+# 安装审计工具并复跑
+uv sync --extra security
+uv run pip-audit
+uv run bandit -r app -ll
+uv run pip-licenses --format=markdown
+```
+
 ## 目录结构
 
 ```text
@@ -327,8 +354,11 @@ enterprise-rag-quality-lab/
 │   └── results/baseline.json
 ├── tests/                   # 39 个 API / RAG / 版本 / 智能组织 / 注入测试
 ├── scripts/ingest.py
-├── docs/                    # 架构与实验日志
-└── .github/workflows/ci.yml
+├── docs/                    # 架构、实验日志、安全审计
+├── docs/audit/              # License / CVE / Bandit 原始报告
+├── Dockerfile               # python:3.11-slim 非 root 镜像
+├── .dockerignore
+└── .github/workflows/ci.yml # lint + test + security + container
 ```
 
 ## 配置
@@ -356,7 +386,7 @@ python -m ruff check .
 python -m pytest --cov=app --cov-report=term-missing
 ```
 
-当前测试：39 项、覆盖率 82%，覆盖 API CRUD、聊天引用、拒答、运行轨迹、切块、检索、21 题评测、制度版本、中文数字、智能体协作、经验复用、反馈和受控进化。CI 在 Python 3.11 与 3.12 上执行同样的 lint、测试和评测门禁。
+当前测试：39 项、覆盖率 82%，覆盖 API CRUD、聊天引用、拒答、运行轨迹、切块、检索、21 题评测、制度版本、中文数字、智能体协作、经验复用、反馈和受控进化。CI 在 Python 3.11 与 3.12 上执行 lint、测试和评测门禁，并额外执行依赖漏洞扫描、License 检查、Bandit 和 Docker 健康检查。
 
 > 如果受限 Windows 沙箱阻止 pytest 创建临时目录，可预先创建 `data/pytest-runtime` 并设置 `RAG_LAB_TEST_DIR` 指向它。
 

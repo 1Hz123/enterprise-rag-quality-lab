@@ -2,6 +2,31 @@
 
 All notable changes to this project are documented here. The format loosely follows Keep a Changelog and the project uses semantic versioning while pre-1.0.
 
+## [0.3.1] - 2026-11-14
+
+### Added
+
+- Multi-stage-friendly `python:3.11-slim` Dockerfile with non-root user, health check and `EXPOSE 8000`.
+- `.dockerignore` for a small, secret-free build context.
+- `security` optional dependency group with `pip-audit`, `bandit` and `pip-licenses`.
+- License inventory, runtime/full CVE reports and Bandit report under `docs/audit/`.
+- Security audit document with reproduction commands and risk boundaries.
+- CI jobs for dependency/license/SAST security and Docker build + health smoke test.
+- README Docker and security sections.
+
+### Changed
+
+- All diagnostic CLI `print()` calls were replaced with logging; stdout remains clean for JSON/CI output.
+- Runtime, development and security dependency groups are explicitly separated in `pyproject.toml`.
+- Docker image uses a non-root user and a runtime-only install.
+- `.gitignore` now covers all `*.db`, caches and audit environments.
+
+### Fixed
+
+- Bandit B608 dynamic SQL findings replaced with static parameterized SQL.
+- Bandit B310 URL-open finding mitigated by validating `http(s)` schemes in the OpenAI-compatible generator.
+- Upgraded pytest from 8.4.2 to 9.2.0 to remove PYSEC-2026-1845 / CVE-2025-71176 from the development dependency set.
+
 ## [0.3.0] - 2026-11-14
 
 ### Added
