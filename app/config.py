@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "Enterprise RAG Quality Lab"
-    app_version: str = "0.2.0"
+    app_version: str = "0.3.0"
     environment: Literal["development", "test", "production"] = "development"
     debug: bool = False
     log_level: str = "INFO"
@@ -58,6 +58,8 @@ class Settings(BaseSettings):
 
     max_context_chars: int = Field(default=9000, ge=1000, le=100_000)
     max_answer_chars: int = Field(default=1200, ge=100, le=10000)
+    experience_reuse_enabled: bool = True
+    experience_min_quality: float = Field(default=0.75, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
     def _validate_ranges(self) -> Settings:

@@ -1,10 +1,5 @@
 #!/usr/bin/env python
-"""Run the fixed benchmark and write a reproducible JSON report.
-
-Typical use:
-    python eval/run_eval.py --output eval/results/baseline.json
-    python eval/run_eval.py --output eval/results/ci.json --fail-under-pass-rate 0.80
-"""
+"""Run the fixed benchmark and write a reproducible JSON report."""
 
 from __future__ import annotations
 
@@ -145,7 +140,6 @@ def main() -> int:
             file=sys.stderr,
         )
         exit_code = 1
-
     if args.require_quality_gate and not report.quality_gate.passed:
         failed = [name for name, passed in report.quality_gate.checks.items() if not passed]
         print(f"quality gate failed: {', '.join(failed)}", file=sys.stderr)

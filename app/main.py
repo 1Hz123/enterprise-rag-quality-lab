@@ -8,7 +8,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api import chat, documents, health, runs
+from app.agents.evolver import EvolutionAgent
+from app.agents.experience import ExperienceService
+from app.agents.orchestrator import IntelligentOrganization
+from app.api import chat, documents, health, organization, runs
 from app.api import eval as eval_api
 from app.config import Settings, get_settings
 from app.db import Database
@@ -40,9 +43,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         retriever = Retriever(database, embeddings)
         generator = build_generator(resolved_settings)
         pipeline = RAGPipeline(retriever, generator, resolved_settings)
+        experience_service = ExperienceService(database)
+        organization_runtime = IntelligentOrganization(
+            pipeline,
+            experience_service,
+            resolved_settings,
+        )
         document_service = DocumentService(database, resolved_settings, embeddings)
-        chat_service = ChatService(database, pipeline)
+        chat_service = ChatService(database, organization_runtime)
         evaluator = Evaluator(pipeline, resolved_settings)
+        evolver = EvolutionAgent(pipeline, evaluator, resolved_settings)
 
         app.state.db = database
         app.state.embeddings = embeddings
@@ -50,7 +60,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.pipeline = pipeline
         app.state.document_service = document_service
         app.state.chat_service = chat_service
+        app.state.organization = organization_runtime
+        app.state.experience_service = experience_service
         app.state.evaluator = evaluator
+        app.state.evolver = evolver
 
         if resolved_settings.auto_ingest_sample_docs:
             result = document_service.seed_sample_documents()
@@ -82,6 +95,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(chat.router)
     app.include_router(runs.router)
     app.include_router(eval_api.router)
+    app.include_router(organization.router)
     return app
 
 

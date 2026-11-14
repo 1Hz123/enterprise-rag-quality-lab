@@ -5,10 +5,11 @@
 ### 目标
 
 1. **可重复**：同一语料、配置和代码在本地得到同一组检索与评测结果。
-2. **可解释**：每个回答都能追溯到候选块、分数、来源和引用。
-3. **可回归**：检索、切块、提示词或生成器变化后，能用固定评测集判断是否退化。
-4. **可替换**：向量、检索器、生成器和评测 judge 都能独立替换。
+2. **可解释**：每个回答都能追溯到候选块、分数、来源、引用、对应智能体和审计检查。
+3. **可回归**：检索、切块、提示词、智能体或生成器变化后，能用固定评测集判断是否退化。
+4. **可替换**：向量、检索器、生成器、智能体角色和评测 judge 都能独立替换。
 5. **安全默认**：直接与间接提示注入都进入评测，而不是只写在 README 里。
+6. **组织智能**：高质量问答可以沉淀为经验，用户反馈和评测结果可以驱动下一轮改进。
 
 ### 非目标
 
@@ -20,26 +21,35 @@
 ## 2. 组件图
 
 ```mermaid
-flowchart LR
+flowchart TD
     A[Markdown / TXT] --> B[Loader]
     B --> C[Section-aware Splitter]
     C --> D[Hashing Embeddings]
     C --> E[(SQLite chunks)]
     D --> E
 
-    Q[Question] --> G[Injection Guard]
-    G -->|blocked| R1[Safe refusal]
-    G -->|allowed| H[Hybrid Retriever]
-    E --> H
-    H --> I{Score + coverage gate}
-    I -->|below| R2[No-context refusal]
-    I -->|pass| J[Context sanitizer]
-    J --> K[Prompt builder / Context items]
-    K --> L[Extractive or OpenAI-compatible generator]
-    L --> M[Citation validator]
-    M --> N[(runs)]
-    M --> O[Chat response]
+    Q[Question] --> G[Coordinator]
+    G -->|safe| X{Experience hit?}
+    X -->|yes| AU[Auditor revalidation]
+    X -->|no| R[Retriever Agents]
+    E --> R
+    R --> RE[Reasoner]
+    RE --> AU
+    AU -->|pass| EX[(Experience Library)]
+    AU --> O[Chat response]
+    O --> N[(runs + agent trace)]
+    O --> F[Feedback]
+    F --> EX
+    EV[Evolution Agent] -. threshold experiment .-> G
 ```
+
+```text
+Coordinator → Retriever → Reasoner → Auditor → Experience
+      ↑                                  │
+      └──────── Evolution / Feedback ────┘
+```
+
+智能组织运行时的核心不是“多几个类”，而是每个角色有独立输入、输出和可审计判定：Coordinator 负责拆解，Retriever 只负责取证，Reasoner 只负责融合，Auditor 决定是否可信，Experience 只接受审计通过的答案。
 
 ## 3. 请求生命周期
 
@@ -48,10 +58,33 @@ flowchart LR
 1. 创建 SQLite 文件与 schema。
 2. 构建 `HashingEmbeddings`。
 3. 构建 `Retriever`、`Generator`、`RAGPipeline`。
-4. 构建 `DocumentService`、`ChatService`、`Evaluator`，挂到 `app.state`。
+4. 构建 `ExperienceService` 和 `IntelligentOrganization`，再构建 `DocumentService`、`ChatService`、`Evaluator`、`EvolutionAgent`。
 5. 若 `auto_ingest_sample_docs=true`，幂等同步 `data/sample_docs/`。
 
 请求使用同步 SQLite 连接，每次操作创建短连接，避免跨线程共享连接。当前规模不需要连接池。
+
+### 3.1 智能组织运行时
+
+| 角色 | 输入 | 输出 | 职责 |
+|---|---|---|---|
+| Coordinator | 原问题、`as_of` | `Plan` + `AgentTrace` | 判断单跳/多时点对比，拆子任务 |
+| Retriever | `Plan` | `RetrievalBundle` 列表 | 按子任务执行混合检索和生效日期过滤 |
+| Reasoner | 证据包 | `RagResult`、`SubAnswer` | 生成单跳答案；多时点合并与引用重编号 |
+| Auditor | 最终答案、子答案、Plan | `AuditReport` | 引用完整、时效、跨任务覆盖、安全 |
+| Experience | 审计通过的答案 | 经验记录 | 上下文哈希校验、复用、反馈沉淀 |
+| Evolution | 固定评测集 | 阈值候选与建议 | 受控搜索，默认不修改运行配置 |
+
+多时点问题（例如“2025 年和 2026 年年假有什么区别”）会产生两个子任务，`as_of` 分别为 `2025-06-01` 和 `2026-06-01`。Reasoner 合并答案时把局部引用编号映射为全局编号；Auditor 按每个子任务的 `as_of` 检查对应引用窗口。
+
+经验复用是保守的：
+
+- 仅对单跳问题开放；
+- 标准化问题和 `as_of` 必须完全相同；
+- 被引用块的内容哈希必须未变化；
+- 复用前仍需通过 Auditor；
+- 低分反馈会删除经验。
+
+进化端点只在当前进程内应用建议，不写配置文件；生产化必须加人工审批、留出集和回滚。
 
 ## 4. 数据模型
 
@@ -88,11 +121,31 @@ flowchart LR
 
 ### `runs`
 
-保存问题、答案、拒答标记、安全标记、模式、检索结果、引用、指标、提示词版本、延迟和错误。`run_id` 让引用与审计可追踪。
+保存问题、答案、拒答标记、安全标记、模式、检索结果、引用、指标、提示词版本、延迟和错误。`metrics_json` 还保存智能体轨迹、质量检查、计划策略和经验 ID，`run_id` 让引用与审计可追踪。
 
 ### `eval_runs`
 
 保存评测摘要、逐题结果、配置和完整报告 JSON。报告同时写入 `eval/results/`，便于提交和跨版本比较。
+
+### `experiences`
+
+| 字段 | 说明 |
+|---|---|
+| `id` | `exp_` 前缀 UUID |
+| `question` / `normalized_question` | 原问题与标准化问题 |
+| `as_of` | 经验对应的制度日期 |
+| `answer` | 审计通过的答案 |
+| `citations_json` | 引用及版本、生效日期 |
+| `retrieved_json` | 复用时的证据块 |
+| `quality_score` | Auditor 质量分 |
+| `context_hash` | 被引用块 ID + 内容哈希，用于失效检测 |
+| `uses` / `last_used_at` | 复用次数与最近使用时间 |
+
+唯一键为 `(normalized_question, as_of)`。被引用文档内容变化后，哈希不匹配，经验自动删除。
+
+### `feedback`
+
+保存 `run_id`、1–5 评分、评论和可选修正答案。评分 4–5 会补录/提升经验；评分 1–2 会删除对应经验。
 
 ## 5. 文档处理
 
@@ -248,7 +301,7 @@ Pipeline 会：
 
 ### 数据集
 
-`eval/dataset.jsonl` 固定 20 题，字段见 README。来源用文件名而不是数据库 UUID，保证重建数据库后仍可评测。每个案例固定 `as_of: 2026-06-01`，避免系统时钟变化导致基线漂移。
+`eval/dataset.jsonl` 固定 21 题，字段见 README。来源用文件名而不是数据库 UUID，保证重建数据库后仍可评测。每个案例固定 `as_of: 2026-06-01`（`q021` 使用 2025-06-01），避免系统时钟变化导致基线漂移。
 
 ### 逐题流程
 
@@ -321,5 +374,8 @@ class EmbeddingModel(Protocol):
 | 查询覆盖门槛 | 误拒语义等价问题 | 记录拒绝原因，人工复核 |
 | 抽取式答案 | 不自然、可能多选背景句 | 作为 fallback；LLM 模式对照 |
 | 规则注入防护 | 绕过与误伤 | 对抗测试、模型分类器、输出审计 |
+| 经验精确匹配 | 相似问法无法复用 | 语义近邻召回 + 更细粒度失效校验 |
+| 进化过拟合 | 同集调参虚高 | 留出集、人工审批、只读建议 |
+| 多时点经验未复用 | 复杂问题仍需重算 | 存储逐引用审计日期后再开放复用 |
 | 无认证/ACL | 数据越权 | 上线前必须补齐 |
 | SQLite 写竞争 | 高并发写入受限 | 只读副本 / PostgreSQL |

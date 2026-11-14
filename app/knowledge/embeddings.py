@@ -16,12 +16,19 @@ from collections import Counter
 from collections.abc import Sequence
 from typing import Protocol
 
-_TOKEN_RE = re.compile(r"[a-z0-9]+(?:[._+-][a-z0-9]+)*|[\u3400-\u4dbf\u4e00-\u9fff]+")
+_TOKEN_RE = re.compile(
+    r"[a-z0-9]+(?:[._+-][a-z0-9]+)*[\u3400-\u4dbf\u4e00-\u9fff]?"
+    r"|[\u3400-\u4dbf\u4e00-\u9fff]+"
+)
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+_UNIT_GAP_RE = re.compile(
+    r"(?<=\d)\s+(?=(?:个工作日|个月|年|天|个|小时|分钟|周|月|元|%))"
+)
 
 
 def normalize_text(text: str) -> str:
-    return unicodedata.normalize("NFKC", text).lower()
+    normalized = unicodedata.normalize("NFKC", text).lower()
+    return _UNIT_GAP_RE.sub("", normalized)
 
 
 def tokenize(text: str, *, include_unigrams: bool = True) -> list[str]:

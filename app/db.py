@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -86,6 +86,36 @@ CREATE TABLE IF NOT EXISTS eval_runs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_eval_runs_created ON eval_runs(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS experiences (
+    id                  TEXT PRIMARY KEY,
+    question            TEXT NOT NULL,
+    normalized_question TEXT NOT NULL,
+    as_of               TEXT NOT NULL,
+    answer              TEXT NOT NULL,
+    citations_json      TEXT NOT NULL DEFAULT '[]',
+    retrieved_json      TEXT NOT NULL DEFAULT '[]',
+    quality_score       REAL NOT NULL DEFAULT 0,
+    context_hash        TEXT NOT NULL,
+    uses                INTEGER NOT NULL DEFAULT 0,
+    created_at          TEXT NOT NULL,
+    last_used_at        TEXT,
+    UNIQUE(normalized_question, as_of)
+);
+
+CREATE INDEX IF NOT EXISTS idx_experiences_lookup
+ON experiences(normalized_question, as_of);
+
+CREATE TABLE IF NOT EXISTS feedback (
+    id                TEXT PRIMARY KEY,
+    run_id            TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    rating            INTEGER NOT NULL,
+    comment           TEXT,
+    corrected_answer  TEXT,
+    created_at        TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_run ON feedback(run_id);
 """
 
 

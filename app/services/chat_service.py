@@ -7,9 +7,10 @@ import uuid
 from dataclasses import asdict
 from typing import Any
 
+from app.agents.orchestrator import IntelligentOrganization
 from app.db import Database, utc_now
-from app.rag.pipeline import RAGPipeline
 from app.schemas import (
+    AgentTraceOut,
     ChatRequest,
     ChatResponse,
     CitationOut,
@@ -36,13 +37,13 @@ def _load_json(value: str | None, fallback: Any) -> Any:
 
 
 class ChatService:
-    def __init__(self, db: Database, pipeline: RAGPipeline) -> None:
+    def __init__(self, db: Database, organization: IntelligentOrganization) -> None:
         self.db = db
-        self.pipeline = pipeline
+        self.organization = organization
 
     def chat(self, request: ChatRequest) -> ChatResponse:
         try:
-            result = self.pipeline.answer(
+            result = self.organization.answer(
                 request.question,
                 top_k=request.top_k,
                 document_ids=request.document_ids,
@@ -94,6 +95,21 @@ class ChatService:
             prompt_version=result.prompt_version,
             mode=result.mode,
             created_at=created_at,
+            plan_strategy=result.plan_strategy,
+            quality_score=result.quality_score,
+            experience_reused=result.experience_reused,
+            experience_ids=result.experience_ids,
+            agents=[
+                AgentTraceOut(
+                    agent=trace.agent,
+                    action=trace.action,
+                    status=trace.status,
+                    detail=trace.detail,
+                    latency_ms=trace.latency_ms,
+                    metadata=trace.metadata,
+                )
+                for trace in result.agents
+            ],
         )
 
     def _record_failure(self, question: str, exc: Exception) -> None:
@@ -110,7 +126,7 @@ class ChatService:
                 (
                     run_id,
                     question,
-                    self.pipeline.generator.mode,
+                    "organization",
                     f"{type(exc).__name__}: {exc}"[:1000],
                     utc_now(),
                 ),

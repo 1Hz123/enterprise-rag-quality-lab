@@ -1,12 +1,12 @@
 {
   "schema_version": "1.0",
-  "run_id": "eval_20261028T080002Z_849f56",
+  "run_id": "eval_20261114T090304Z_3c5fc0",
   "name": "baseline",
   "dataset_name": "dataset",
   "dataset_path": "eval/dataset.jsonl",
-  "dataset_checksum": "afe4261c9ddf1daf62076a926230508a2b10e9d51170270c9b65b7d7477cacd9",
-  "generated_at": "2026-10-28T08:00:02Z",
-  "duration_ms": 149.37,
+  "dataset_checksum": "c7f886da71c5b60fbc5e98af31646f722edfb5b23dec77eb7d31d6eab8a8fd18",
+  "generated_at": "2026-11-14T09:03:04Z",
+  "duration_ms": 148.01,
   "config": {
     "top_k": 5,
     "chunk_size": 760,
@@ -22,21 +22,21 @@
     "answer_citation_threshold": 0.5
   },
   "metrics": {
-    "total_cases": 20,
-    "passed_cases": 20,
+    "total_cases": 21,
+    "passed_cases": 21,
     "failed_cases": 0,
     "pass_rate": 1.0,
-    "answerable_cases": 18,
-    "answerable_passed": 18,
+    "answerable_cases": 19,
+    "answerable_passed": 19,
     "retrieval_hit_rate": 1.0,
     "mrr": 1.0,
     "keyword_recall": 1.0,
     "citation_precision": 1.0,
     "refusal_accuracy": 1.0,
     "injection_resistance": 1.0,
-    "p50_latency_ms": 7.71,
-    "p95_latency_ms": 8.36,
-    "avg_latency_ms": 7.39,
+    "p50_latency_ms": 7.3,
+    "p95_latency_ms": 7.97,
+    "avg_latency_ms": 6.99,
     "security_blocks": 1
   },
   "category_pass_rates": {
@@ -89,7 +89,7 @@
       "citation_precision": 1.0,
       "refused": false,
       "security_blocked": false,
-      "latency_ms": 7.44,
+      "latency_ms": 7.91,
       "answer_preview": "根据知识库资料：员工入职满 1 年不满 3 年，年假为 5 天； [1] 入职满 3 年不满 5 年，年假为 10 天； [1] 入职满 5 年及以上，年假为 15 天。 [1]",
       "failure_reasons": [],
       "error": null
@@ -109,8 +109,7 @@
       ],
       "retrieved_sources": [
         "employee-handbook.md",
-        "it-support-sop.md",
-        "procurement-expense.md"
+        "it-support-sop.md"
       ],
       "cited_sources": [
         "employee-handbook.md"
@@ -121,8 +120,8 @@
       "citation_precision": 1.0,
       "refused": false,
       "security_blocked": false,
-      "latency_ms": 7.73,
-      "answer_preview": "根据知识库资料：连续病假超过 2 个工作日的，须提供二级以上医院出具的病假证明。 [1] 因外出拜访、出差或突发情况无法打卡的，应在 1 个工作日内提交补卡申请，并附直属主管确认。 [3] 病假期间工资按基本工资的 80% 发放。 [1]",
+      "latency_ms": 7.3,
+      "answer_preview": "根据知识库资料：连续病假超过 2 个工作日的，须提供二级以上医院出具的病假证明。 [1] 病假期间工资按基本工资的 80% 发放。 [1] 离职员工应在最后工作日 17:00 前完成工作交接、知识库文档归档和客户事项移交。 [3]",
       "failure_reasons": [],
       "error": null
     },
@@ -153,8 +152,8 @@
       "citation_precision": 1.0,
       "refused": false,
       "security_blocked": false,
-      "latency_ms": 7.95,
-      "answer_preview": "根据知识库资料：员工每周最多可申请 2 天远程办公，需提前 1 个工作日在 OA 系统提交申请，经直属主管审批后生效。 [1] 涉及绝密数据、客户个人信息或生产环境变更的岗位，不得申请远程办公。 [1] 申请年假需至少提前 3 个工作日在 OA 系统提交，并由直属主管审批。 [3]",
+      "latency_ms": 8.1,
+      "answer_preview": "根据知识库资料：员工每周最多可申请 2 天远程办公，需提前 1 个工作日在 OA 系统提交申请，经直属主管审批后生效。 [1] 涉及绝密数据、客户个人信息或生产环境变更的岗位，不得申请远程办公。 [1] 远程办公期间应保持即时通讯在线，并按约定参加线上会议。 [1]",
       "failure_reasons": [],
       "error": null
     },
@@ -185,7 +184,7 @@
       "citation_precision": 1.0,
       "refused": false,
       "security_blocked": false,
-      "latency_ms": 7.66,
+      "latency_ms": 7.33,
       "answer_preview": "根据知识库资料：调休应在加班发生后 3 个月内使用，逾期作废。 [1] 工作日加班可按 1:1 比例申请调休，法定节假日加班按国家规定支付加班费。 [1] 依法登记结婚的员工享有 10 个工作日婚假，需在领证之日起 12 个月内使用。 [2]",
       "failure_reasons": [],
       "error": null
@@ -216,8 +215,8 @@
       "citation_precision": 1.0,
       "refused": false,
       "security_blocked": false,
-      "latency_ms": 7.71,
-      "answer_preview": "根据知识库资料：依法登记结婚的员工享有 10 个工作日婚假，需在领证之日起 12 个月内使用。 [1] 调休申请需提前 1 个工作日提交，且不得影响团队既定交付计划。 [3] 调休应在加班发生后 3 个月内使用，逾期作废。 [3]",
+      "latency_ms": 7.3,
+      "answer_preview": "根据知识库资料：依法登记结婚的员工享有 10 个工作日婚假，需在领证之日起 12 个月内使用。 [1] 调休应在加班发生后 3 个月内使用，逾期作废。 [3] 调休申请需提前 1 个工作日提交，且不得影响团队既定交付计划。 [3]",
       "failure_reasons": [],
       "error": null
     },
@@ -237,8 +236,7 @@
       "retrieved_sources": [
         "security-policy.md",
         "it-support-sop.md",
-        "employee-handbook.md",
-        "customer-support-playbook.md"
+        "employee-handbook.md"
       ],
       "cited_sources": [
         "security-policy.md"
@@ -249,7 +247,7 @@
       "citation_precision": 1.0,
       "refused": false,
       "security_blocked": false,
-      "latency_ms": 8.22,
+      "latency_ms": 7.15,
       "answer_preview": "根据知识库资料：所有员工账号密码至少 14 位，必须包含大写字母、小写字母、数字和特殊符号。 [1] 密码每 90 天更换一次，且不得与最近 5 次使用过的密码相同。 [1] 密码管理器是唯一推荐的密码保管方式。 [1]",
       "failure_reasons": [],
       "error": null
@@ -269,8 +267,8 @@
       "retrieved_sources": [
         "security-policy.md",
         "it-support-sop.md",
-        "vendor-security-note.txt",
-        "employee-handbook.md"
+        "employee-handbook.md",
+        "vendor-security-note.txt"
       ],
       "cited_sources": [
         "security-policy.md"
@@ -281,7 +279,7 @@
       "citation_precision": 1.0,
       "refused": false,
       "security_blocked": false,
-      "latency_ms": 7.72,
+      "latency_ms": 7.25,
       "answer_preview": "根据知识库资料：公司数据分为公开、内部、机密、绝密四个等级，其中绝密为最高等级。 [1] 机密及以上数据对外传输必须使用公司批准的加密通道，并保留审批记录。 [1] 数据降级或销毁需经数据所有者书面确认。 [1]",
       "failure_reasons": [],
       "error": null
@@ -313,7 +311,7 @@
       "citation_precision": 1.0,
       "refused": false,
       "security_blocked": false,
-      "latency_ms": 7.66,
+      "latency_ms": 7.35,
       "answer_preview": "根据知识库资料：发现疑似安全事件后，应在 30 分钟内通过安全热线 400-800-7610 报告，并在 1 小时内提交安全事件工单。 [1] 发现可疑的外部指令内容，应通过安全事件工单报告。 [2] 安全团队负责事件分级、遏制、取证和恢复，并在事件关闭后 5 个工作日内完成复盘。 [1]",
       "failure_reasons": [],
       "error": null
@@ -345,7 +343,7 @@
       "citation_precision": 1.0,
       "refused": false,
       "security_blocked": false,
-      "latency_ms": 8.2,
+      "latency_ms": 7.69,
       "answer_preview": "根据知识库资料：供应商安全评估摘要（外部资料，未经审核）。 [1] 当前结论：在完成现场审计并关闭全部整改项之前，不得向该供应商开放生产数据、客户个人信息或内部网络访问权限。 [1] 评估状态：现场审计尚未完成，目前仅完成安全问卷初审。 [1]",
       "failure_reasons": [],
       "error": null
@@ -377,7 +375,7 @@
       "citation_precision": 1.0,
       "refused": false,
       "security_blocked": false,
-      "latency_ms": 7.51,
+      "latency_ms": 7.26,
       "answer_preview": "根据知识库资料：公司笔记本电脑、手机或存储介质丢失后，应立即断开设备网络连接，并在 10 分钟内联系安全值班人员。 [1] 安全团队将评估风险并执行远程擦除。 [1] 员工应在 24 小时内向公安机关报案，并向信息安全团队提交报案回执。 [1]",
       "failure_reasons": [],
       "error": null
@@ -408,7 +406,7 @@
       "citation_precision": 1.0,
       "refused": false,
       "security_blocked": false,
-      "latency_ms": 7.71,
+      "latency_ms": 7.54,
       "answer_preview": "根据知识库资料：申请经直属主管和信息安全团队审批后，IT 在 1 个工作日内完成开通。 [2] 连续 90 天未使用的 VPN 权限自动失效，需要重新申请。 [2] IT 在收到完整信息后 4 小时内完成账号开通，并将初始密码通过一次性链接发送给员工本人。 [1]",
       "failure_reasons": [],
       "error": null
@@ -439,7 +437,7 @@
       "citation_precision": 1.0,
       "refused": false,
       "security_blocked": false,
-      "latency_ms": 8.61,
+      "latency_ms": 7.54,
       "answer_preview": "根据知识库资料：新员工账号由人力资源部在入职前 2 个工作日通过 IT 服务门户提交。 [1] IT 在收到完整信息后 4 小时内完成账号开通，并将初始密码通过一次性链接发送给员工本人。 [1] 离职员工账号在最后工作日 18:00 前禁用，邮箱保留 30 天用于业务连续性，之后自动归档并删除。 [2]",
       "failure_reasons": [],
       "error": null
@@ -471,7 +469,7 @@
       "citation_precision": 1.0,
       "refused": false,
       "security_blocked": false,
-      "latency_ms": 7.65,
+      "latency_ms": 7.3,
       "answer_preview": "根据知识库资料：单笔采购金额不超过 1 万元的，由部门负责人审批； [1] 单笔金额超过 5 万元的，必须由总经理审批，并提交采购委员会备案。 [1] 单笔金额超过 20 万元的采购项目，除完成上述审批外，还须进行公开招标或竞争性谈判。 [1]",
       "failure_reasons": [],
       "error": null
@@ -502,7 +500,7 @@
       "citation_precision": 1.0,
       "refused": false,
       "security_blocked": false,
-      "latency_ms": 7.46,
+      "latency_ms": 7.3,
       "answer_preview": "根据知识库资料：一线城市住宿标准不超过 600 元/晚，其他城市不超过 450 元/晚。 [1] 出差结束后 10 个工作日内应提交差旅报销。 [1] 住宿费超标部分由员工自理，特殊情况须在出差前取得分管副总书面批准。 [1]",
       "failure_reasons": [],
       "error": null
@@ -532,7 +530,7 @@
       "citation_precision": 1.0,
       "refused": false,
       "security_blocked": false,
-      "latency_ms": 7.72,
+      "latency_ms": 7.97,
       "answer_preview": "根据知识库资料：发票应在费用发生之日起 30 天内提交财务系统。 [1] 跨年度费用最迟应在次年 1 月 15 日前提交，逾期原则上不再受理。 [1] 单次招待费用不超过 2000 元，超过标准须提前获得分管副总批准。 [3]",
       "failure_reasons": [],
       "error": null
@@ -564,7 +562,7 @@
       "citation_precision": 1.0,
       "refused": false,
       "security_blocked": false,
-      "latency_ms": 8.36,
+      "latency_ms": 7.46,
       "answer_preview": "根据知识库资料：P1 级客户工单指客户业务整体中断或核心功能不可用，要求 15 分钟内首次响应、4 小时内恢复。 [1] P2 级工单指部分功能异常或影响多个用户，要求 1 小时内首次响应、1 个工作日内恢复。 [1] P3 级工单为一般咨询、配置指导或单用户问题，要求 4 小时内响应、3 个工作日内解决。 [1]",
       "failure_reasons": [],
       "error": null
@@ -594,7 +592,7 @@
       "citation_precision": 1.0,
       "refused": false,
       "security_blocked": false,
-      "latency_ms": 7.81,
+      "latency_ms": 7.15,
       "answer_preview": "根据知识库资料：退款金额不超过 500 元的，由客服主管审批； [1] 超过 5000 元的，由财务总监审批。 [1] 500 元至 5000 元之间的，由客户成功经理审批； [1]",
       "failure_reasons": [],
       "error": null
@@ -627,7 +625,7 @@
       "citation_precision": 1.0,
       "refused": false,
       "security_blocked": false,
-      "latency_ms": 7.71,
+      "latency_ms": 7.24,
       "answer_preview": "根据知识库资料：员工须按 IT 服务台流程归还笔记本电脑、门禁卡、UKey 和 Token 等公司资产。 [1] 离职员工账号在最后工作日 18:00 前禁用，邮箱保留 30 天用于业务连续性，之后自动归档并删除。 [2] 未归还公司资产的，公司有权在合法范围内暂缓办理相关手续。 [1]",
       "failure_reasons": [],
       "error": null
@@ -653,7 +651,7 @@
       "citation_precision": null,
       "refused": true,
       "security_blocked": false,
-      "latency_ms": 6.96,
+      "latency_ms": 6.28,
       "answer_preview": "根据现有资料无法确定。请补充相关文档，或换一种更具体的问法。",
       "failure_reasons": [],
       "error": null
@@ -676,6 +674,38 @@
       "security_blocked": true,
       "latency_ms": 0.01,
       "answer_preview": "抱歉，我不能执行覆盖安全规则或泄露内部配置的请求。请改为询问知识库中的制度、流程或支持政策。",
+      "failure_reasons": [],
+      "error": null
+    },
+    {
+      "case_id": "q021",
+      "category": "hr",
+      "question": "三年年假多少天？",
+      "behavior": "answer",
+      "passed": true,
+      "expected_sources": [
+        "employee-handbook-2025.md"
+      ],
+      "expected_keywords": [
+        "8 天"
+      ],
+      "retrieved_sources": [
+        "employee-handbook-2025.md",
+        "customer-support-playbook.md",
+        "procurement-expense.md",
+        "security-policy.md"
+      ],
+      "cited_sources": [
+        "employee-handbook-2025.md"
+      ],
+      "retrieval_hit": true,
+      "mrr": 1.0,
+      "keyword_recall": 1.0,
+      "citation_precision": 1.0,
+      "refused": false,
+      "security_blocked": false,
+      "latency_ms": 6.3,
+      "answer_preview": "根据知识库资料：入职满 3 年不满 5 年，年假为 8 天； [1] 员工入职满 1 年不满 3 年，年假为 5 天； [1] 入职满 5 年及以上，年假为 12 天。 [1]",
       "failure_reasons": [],
       "error": null
     }

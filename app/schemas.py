@@ -159,6 +159,15 @@ class CitationOut(BaseModel):
     score: float
 
 
+class AgentTraceOut(BaseModel):
+    agent: str
+    action: str
+    status: str
+    detail: str
+    latency_ms: float
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class ChatResponse(BaseModel):
     run_id: str
     question: str
@@ -172,6 +181,11 @@ class ChatResponse(BaseModel):
     prompt_version: str
     mode: str
     created_at: str
+    plan_strategy: str = "single_question"
+    quality_score: float = 0.0
+    experience_reused: bool = False
+    experience_ids: list[str] = Field(default_factory=list)
+    agents: list[AgentTraceOut] = Field(default_factory=list)
 
 
 class RunSummary(BaseModel):
@@ -246,3 +260,77 @@ class DatasetPreview(BaseModel):
     case_count: int
     categories: dict[str, int]
     cases: list[dict[str, Any]]
+
+
+class AgentProfile(BaseModel):
+    name: str
+    responsibility: str
+
+
+class OrganizationStatus(BaseModel):
+    name: str
+    principle: str
+    agents: list[AgentProfile]
+    experience_total: int
+    experience_uses: int
+    average_quality: float
+    experience_reuse_enabled: bool
+    loop: list[str]
+
+
+class ExperienceOut(BaseModel):
+    id: str
+    question: str
+    as_of: date
+    answer_preview: str
+    citation_count: int
+    sources: list[str]
+    quality_score: float
+    uses: int
+    created_at: str
+    last_used_at: str | None = None
+
+
+class ExperienceList(BaseModel):
+    items: list[ExperienceOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class FeedbackRequest(StrictModel):
+    rating: int = Field(ge=1, le=5)
+    comment: str | None = Field(default=None, max_length=2000)
+    corrected_answer: str | None = Field(default=None, max_length=5000)
+
+
+class FeedbackResponse(BaseModel):
+    feedback_id: str
+    run_id: str
+    rating: int
+    action: str
+    experience_id: str | None = None
+
+
+class EvolutionRequest(StrictModel):
+    apply: bool = False
+
+
+class EvolutionCandidate(BaseModel):
+    min_query_coverage: float
+    pass_rate: float
+    retrieval_hit_rate: float
+    citation_precision: float
+    injection_resistance: float
+    p95_latency_ms: float
+
+
+class EvolutionReport(BaseModel):
+    baseline: EvolutionCandidate
+    candidates: list[EvolutionCandidate]
+    best: EvolutionCandidate
+    recommended: bool
+    applied: bool
+    applied_value: float | None = None
+    duration_ms: float
+    caveat: str

@@ -2,6 +2,34 @@
 
 All notable changes to this project are documented here. The format loosely follows Keep a Changelog and the project uses semantic versioning while pre-1.0.
 
+## [0.3.0] - 2026-11-14
+
+### Added
+
+- Task-based Intelligent Organization RAG runtime with explicit Coordinator, Retriever, Reasoner and Auditor agents.
+- Multi-hop temporal comparison: two-year questions are split into separate `as_of` subtasks, answered independently, then merged with globally renumbered citations.
+- Experience Library backed by SQLite: audited high-quality single-hop answers are stored, context-hash checked and safely reused.
+- Feedback loop at `POST /api/v1/runs/{run_id}/feedback`: ratings 4–5 promote an experience; ratings 1–2 suppress it.
+- Controlled evaluation-driven evolution at `POST /api/v1/organization/evolve`: bounded coverage-threshold search, proposal by default and explicit opt-in application.
+- Organization inspection APIs for agent roster, experience statistics and experience list/delete.
+- Agent traces, quality score, plan strategy and experience IDs in chat responses and run metrics.
+- Chinese-numeral query normalization and digit/unit token alignment without weakening coverage safety.
+- `q021` Chinese-numeral benchmark case; benchmark expanded to 21 cases.
+- Seven organization, experience, feedback and evolution tests; suite is now 39 tests.
+- DB schema v3 with `experiences` and `feedback` tables.
+
+### Changed
+
+- `ChatService` now calls the Intelligent Organization runtime instead of the single pipeline directly.
+- `RAGPipeline` exposes retrieval-only and answer-from-retrieval methods for agent reuse without duplicate retrieval.
+- The historical Auditor responsibility now covers citation validity, effective-date windows, multi-task coverage and safety.
+- Documentation, API examples and experiment log updated for the intelligent-organization design.
+
+### Fixed
+
+- Removed the unsafe “short questions bypass query coverage” workaround; Chinese numerals are normalized instead.
+- Removed duplicated, report-mutating defensive-audit logic from the evaluation CLI; the evaluator and Auditor agent now own those checks.
+
 ## [0.2.0] - 2026-10-28
 
 ### Added
