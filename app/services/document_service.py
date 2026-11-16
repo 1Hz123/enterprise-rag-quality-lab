@@ -14,7 +14,7 @@ from app.config import Settings
 from app.db import Database, utc_now
 from app.knowledge.embeddings import EmbeddingModel
 from app.knowledge.loader import LoadedDocument, load_directory, normalize_text
-from app.knowledge.splitter import estimate_tokens, split_text
+from app.knowledge.splitter import estimate_tokens, split_document
 from app.schemas import (
     DocumentCreate,
     DocumentDetail,
@@ -67,13 +67,18 @@ def policy_fields_from_metadata(metadata: dict[str, Any]) -> dict[str, str]:
 
 
 def document_create_from_loaded(loaded: LoadedDocument) -> DocumentCreate:
+    policy_fields = policy_fields_from_metadata(loaded.metadata)
+    if loaded.effective_from:
+        policy_fields.setdefault("effective_from", loaded.effective_from.isoformat())
+    if loaded.effective_until:
+        policy_fields.setdefault("effective_until", loaded.effective_until.isoformat())
     return DocumentCreate(
         title=loaded.title,
         content=loaded.content,
         source=loaded.source,
         content_type=loaded.content_type,
         metadata=loaded.metadata,
-        **policy_fields_from_metadata(loaded.metadata),
+        **policy_fields,
     )
 
 
@@ -127,12 +132,11 @@ class DocumentService:
     def _build_chunk_rows(
         self,
         document_id: str,
-        title: str,
-        content: str,
+        loaded: LoadedDocument,
         now: str,
     ) -> list[tuple[Any, ...]]:
-        chunks = split_text(
-            content,
+        chunks = split_document(
+            loaded,
             chunk_size=self.settings.chunk_size,
             overlap=self.settings.chunk_overlap,
         )
@@ -140,7 +144,7 @@ class DocumentService:
             raise ValueError("document produced no indexable chunks")
 
         embedding_inputs = [
-            f"{title}\n{chunk.section or ''}\n{chunk.text}".strip() for chunk in chunks
+            f"{loaded.title}\n{chunk.section or ''}\n{chunk.text}".strip() for chunk in chunks
         ]
         vectors = self.embeddings.embed(embedding_inputs)
         return [
@@ -152,7 +156,13 @@ class DocumentService:
                 chunk.text,
                 estimate_tokens(chunk.text),
                 _json(vector),
-                _json(chunk.metadata),
+                _json(
+                    {
+                        **chunk.metadata,
+                        "embedding_model": self.embeddings.name,
+                        "embedding_dimension": self.embeddings.dimension,
+                    }
+                ),
                 now,
             )
             for chunk, vector in zip(chunks, vectors, strict=True)
@@ -226,7 +236,16 @@ class DocumentService:
             if conflict:
                 raise PolicyConflictError(conflict)
 
-            chunk_rows = self._build_chunk_rows(document_id, title, content, now)
+            loaded = LoadedDocument(
+                title=title,
+                source=source,
+                content=content,
+                content_type=payload.content_type,
+                effective_from=payload.effective_from,
+                effective_until=payload.effective_until,
+                metadata=self._metadata_with_policy(payload),
+            )
+            chunk_rows = self._build_chunk_rows(document_id, loaded, now)
             connection.execute(
                 """
                 INSERT INTO documents
@@ -297,7 +316,16 @@ class DocumentService:
             if conflict:
                 raise PolicyConflictError(conflict)
 
-            chunk_rows = self._build_chunk_rows(document_id, payload.title, content, now)
+            loaded = LoadedDocument(
+                title=payload.title,
+                source=payload.source,
+                content=content,
+                content_type=payload.content_type,
+                effective_from=payload.effective_from,
+                effective_until=payload.effective_until,
+                metadata=self._metadata_with_policy(payload),
+            )
+            chunk_rows = self._build_chunk_rows(document_id, loaded, now)
             connection.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))
             connection.execute(
                 """
@@ -399,9 +427,16 @@ class DocumentService:
         detail = self.get_document(document_id)
         now = utc_now()
         with self.db.connect() as connection:
-            chunk_rows = self._build_chunk_rows(
-                document_id, detail.title, detail.content, now
+            loaded = LoadedDocument(
+                title=detail.title,
+                source=detail.source,
+                content=detail.content,
+                content_type=detail.content_type,
+                effective_from=detail.effective_from,
+                effective_until=detail.effective_until,
+                metadata=detail.metadata,
             )
+            chunk_rows = self._build_chunk_rows(document_id, loaded, now)
             connection.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))
             connection.executemany(
                 """

@@ -17,7 +17,8 @@ from collections.abc import Sequence
 from typing import Protocol
 
 _TOKEN_RE = re.compile(
-    r"[a-z0-9]+(?:[._+-][a-z0-9]+)*[\u3400-\u4dbf\u4e00-\u9fff]?"
+    r"\d+(?:[._+-]\d+)*[\u3400-\u4dbf\u4e00-\u9fff]?"
+    r"|[a-z0-9]+(?:[._+-][a-z0-9]+)*"
     r"|[\u3400-\u4dbf\u4e00-\u9fff]+"
 )
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
@@ -26,7 +27,7 @@ _UNIT_GAP_RE = re.compile(
 )
 
 
-def normalize_text(text: str) -> str:
+def normalize_for_retrieval(text: str) -> str:
     normalized = unicodedata.normalize("NFKC", text).lower()
     return _UNIT_GAP_RE.sub("", normalized)
 
@@ -34,11 +35,13 @@ def normalize_text(text: str) -> str:
 def tokenize(text: str, *, include_unigrams: bool = True) -> list[str]:
     """Tokenize Latin words and Chinese character bigrams.
 
+    Numeric-unit tokens such as ``3年`` are preserved, while a Latin word is
+    not allowed to swallow the first character of a following Chinese word.
     Chinese unigrams are included for the embedding model but excluded from
     lexical scoring, where bigrams carry far more signal.
     """
 
-    normalized = normalize_text(text)
+    normalized = normalize_for_retrieval(text)
     tokens: list[str] = []
     for match in _TOKEN_RE.finditer(normalized):
         value = match.group(0)
@@ -62,8 +65,13 @@ def lexical_tokens(text: str) -> list[str]:
 
 
 def cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
-    if len(left) != len(right) or not left:
-        return 0.0
+    if not left or not right:
+        raise ValueError("embedding vectors must not be empty")
+    if len(left) != len(right):
+        raise ValueError(
+            f"embedding dimension mismatch: left={len(left)}, right={len(right)}; "
+            "reindex the corpus after changing embedding_dimension"
+        )
     score = sum(a * b for a, b in zip(left, right, strict=True))
     return max(-1.0, min(1.0, score))
 

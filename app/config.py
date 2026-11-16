@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "Enterprise RAG Quality Lab"
-    app_version: str = "0.3.1"
+    app_version: str = "1.0.1"
     environment: Literal["development", "test", "production"] = "development"
     debug: bool = False
     log_level: str = "INFO"
@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     def _validate_ranges(self) -> Settings:
         if self.chunk_overlap >= self.chunk_size:
             raise ValueError("chunk_overlap must be smaller than chunk_size")
+        if self.chunk_overlap > self.chunk_size // 2:
+            raise ValueError("chunk_overlap must not exceed half of chunk_size")
         if self.generator_provider == "openai" and not self.openai_api_key:
             raise ValueError("RAG_LAB_OPENAI_API_KEY is required when generator_provider=openai")
         return self

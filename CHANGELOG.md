@@ -1,6 +1,35 @@
 # Changelog
 
-All notable changes to this project are documented here. The format loosely follows Keep a Changelog and the project uses semantic versioning while pre-1.0.
+All notable changes to this project are documented here. The format loosely follows Keep a Changelog and the project uses semantic versioning.
+
+## [1.0.1] - 2026-11-16
+
+### Added
+
+- Document-aware `split_document(LoadedDocument)`; every chunk now inherits source, checksum, policy metadata, effective dates, relative path, heading path and embedding model/dimension.
+- Hierarchical `heading_path` metadata for nested Markdown headings.
+- GB18030 fallback decoding for Chinese enterprise text files, with encoding metadata.
+- Frontmatter `effective_to` compatibility alias, date normalization to ISO and typed `effective_from/effective_until`.
+- Directory scanning ignores VCS, virtualenv, node_modules and build/cache directories.
+- Per-file load failure isolation (`strict=False` by default) with warnings.
+- Eight ingestion/splitter regression tests; suite is now 47 tests.
+
+### Changed
+
+- `cosine_similarity` now raises on empty or mismatched embedding dimensions instead of silently returning 0.
+- Chunk overlap must not exceed half of `chunk_size`.
+- Mixed Latin/Chinese tokenization no longer swallows the first Chinese character of a following word.
+- English periods are sentence boundaries only when followed by whitespace.
+- Markdown headings inside fenced code blocks are ignored by both loader title inference and splitter sections.
+- Leading `---` horizontal rules are no longer mistaken for frontmatter.
+- `embeddings.normalize_text` renamed to `normalize_for_retrieval` to avoid collision with loader normalization.
+
+### Fixed
+
+- Provenance no longer disappears between `LoadedDocument`, splitter and stored chunks.
+- Dates are canonical ISO and chronologically comparable, with typed fields carried through ingestion.
+- A single unreadable file no longer aborts a whole directory import.
+- `Python代码` now produces the `代码` bigram instead of `python代`.
 
 ## [0.3.1] - 2026-11-14
 

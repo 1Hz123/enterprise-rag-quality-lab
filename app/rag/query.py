@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from app.knowledge.embeddings import normalize_text
+from app.knowledge.embeddings import normalize_for_retrieval
 
 _CN_DIGITS = {
     "零": 0,
@@ -59,6 +59,6 @@ def normalize_query(query: str) -> str:
     documents that use Arabic numerals.
     """
 
-    normalized = normalize_text(query)
+    normalized = normalize_for_retrieval(query)
     normalized = _CN_NUMBER_RE.sub(_replace_chinese_number, normalized)
     return re.sub(r"\s+", " ", normalized).strip()

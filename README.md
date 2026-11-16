@@ -32,6 +32,7 @@
 - **多时点制度对比**：自动识别“2025 年 vs 2026 年”的对比问题，按生效日期拆成两个子任务，再合并引用。
 - **完全离线的默认链路**：哈希向量 + BM25 混合检索 + 抽取式生成，零外部服务依赖。
 - **可替换生成器**：默认 `extractive`，也支持 OpenAI 兼容的 Chat Completions 接口。
+- **可追溯 chunk**：每个 chunk 继承 `source`、`checksum`、制度版本、生效日期和 `heading_path`；引用可定位到来源与版本。
 - **制度版本时间旅行**：按 `as_of` 查询历史时点的有效制度；旧版本自动失效，重叠生效窗口会被拒绝。
 - **经验沉淀与复用**：审计通过且质量达标的回答进入经验库；上下文变化后自动失效。
 - **反馈闭环**：用户评分可提升或抑制经验；低分经验会被删除。
@@ -74,8 +75,8 @@ uvicorn app.main:app --reload
 ### 方式三：Docker
 
 ```bash
-docker build -t enterprise-rag-quality-lab:0.3.1 .
-docker run --rm -p 8000:8000 enterprise-rag-quality-lab:0.3.1
+docker build -t enterprise-rag-quality-lab:1.0.1 .
+docker run --rm -p 8000:8000 enterprise-rag-quality-lab:1.0.1
 ```
 
 镜像基于 `python:3.11-slim`，使用非 root 用户，暴露 8000，并带 `/health` 健康检查。详见 [Dockerfile](Dockerfile)。
@@ -222,8 +223,8 @@ python eval/run_eval.py `
 | 引用准确率 | 100% |
 | 拒答正确率 | 100% |
 | 提示注入抵抗率 | 100% |
-| 延迟 p50 | 7.3 ms |
-| 延迟 p95 | 8.0 ms |
+| 延迟 p50 | 8.1 ms |
+| 延迟 p95 | 8.6 ms |
 
 运行环境：Windows、Python 3.12.5、SQLite、本地 `hashing-384` 向量、`extractive` 生成器，21 道题单次本地运行。延迟只代表本机进程内计算，不代表生产 SLA。
 
@@ -352,7 +353,7 @@ enterprise-rag-quality-lab/
 │   ├── dataset.jsonl        # 21 道固定问题
 │   ├── run_eval.py
 │   └── results/baseline.json
-├── tests/                   # 39 个 API / RAG / 版本 / 智能组织 / 注入测试
+├── tests/                   # 47 个 API / RAG / 版本 / 摄入 / 智能组织 / 注入测试
 ├── scripts/ingest.py
 ├── docs/                    # 架构、实验日志、安全审计
 ├── docs/audit/              # License / CVE / Bandit 原始报告
@@ -386,7 +387,7 @@ python -m ruff check .
 python -m pytest --cov=app --cov-report=term-missing
 ```
 
-当前测试：39 项、覆盖率 82%，覆盖 API CRUD、聊天引用、拒答、运行轨迹、切块、检索、21 题评测、制度版本、中文数字、智能体协作、经验复用、反馈和受控进化。CI 在 Python 3.11 与 3.12 上执行 lint、测试和评测门禁，并额外执行依赖漏洞扫描、License 检查、Bandit 和 Docker 健康检查。
+当前测试：47 项、覆盖率 83%，覆盖 API CRUD、聊天引用、拒答、运行轨迹、切块、检索、21 题评测、制度版本、中文数字、chunk 元数据透传、代码块/GBK/英文分句、智能体协作、经验复用、反馈和受控进化。CI 在 Python 3.11 与 3.12 上执行 lint、测试和评测门禁，并额外执行依赖漏洞扫描、License 检查、Bandit 和 Docker 健康检查。
 
 > 如果受限 Windows 沙箱阻止 pytest 创建临时目录，可预先创建 `data/pytest-runtime` 并设置 `RAG_LAB_TEST_DIR` 指向它。
 

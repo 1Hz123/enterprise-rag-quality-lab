@@ -115,9 +115,21 @@ Coordinator → Retriever → Reasoner → Auditor → Experience
 | `content` | 不包含标题正文的块文本 |
 | `token_estimate` | 中文按字符、拉丁按词的粗略估算 |
 | `embedding_json` | L2 归一化向量的 JSON 数组 |
-| `metadata_json` | 字符数等切块元数据 |
+| `metadata_json` | 字符数、heading path、来源、checksum、制度日期、embedding 版本等 |
 
 `chunks.document_id` 外键带 `ON DELETE CASCADE`。
+
+### document → chunk 元数据契约
+
+`split_document(LoadedDocument)` 是唯一的切块入口。每个 chunk 必须继承：
+
+- `source` / `relative_path` / `title`
+- 文档 `checksum`
+- `policy_key` / `version` / `effective_from` / `effective_until`
+- `heading_path`（例如 `员工手册 > 休假 > 年假`）
+- `embedding_model` / `embedding_dimension`
+
+这保证引用、增量失效、版本审计和维度升级都能定位到来源，而不是只传一段裸文本。日期在 loader 中提升为 `date` 并统一写为 ISO `YYYY-MM-DD`，因此字符串比较也是时间顺序。
 
 ### `runs`
 

@@ -1,13 +1,26 @@
-"""Load trusted text documents from disk or an upload."""
+"""Load trusted text documents from disk or an upload.
+
+Frontmatter is parsed with a small, dependency-free ``key: value`` reader. Known
+date fields (``effective_from`` / ``effective_until`` / ``published_at`` /
+``updated_at``) are normalized to ISO-8601 and additionally promoted to typed
+``date`` attributes on :class:`LoadedDocument`, so callers can filter by validity
+window without re-parsing strings.
+"""
 
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import mimetypes
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 SUPPORTED_SUFFIXES = {".md", ".markdown", ".txt"}
 _TEXT_CONTENT_TYPES = {"text/plain", "text/markdown", "text/x-markdown", "application/octet-stream"}
@@ -16,6 +29,29 @@ _FRONTMATTER_RE = re.compile(
     r"\A---[ \t]*\n(?P<body>.*?)\n---[ \t]*(?:\n|\Z)",
     re.DOTALL,
 )
+_FENCE_RE = re.compile(r"^\s*(```+|~~~+)")
+_IGNORED_DIRS = {
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "node_modules",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".mypy_cache",
+    ".audit",
+    "dist",
+    "build",
+}
+
+#: Frontmatter keys that are treated as dates and normalized to ISO-8601.
+_DATE_KEYS = ("effective_from", "effective_until", "published_at", "updated_at")
+
+#: Date keys additionally promoted to typed attributes on ``LoadedDocument``.
+_PROMOTED_DATE_KEYS = frozenset({"effective_from", "effective_until"})
+
+#: Fallback formats tried after the separator cleanup in :func:`_coerce_date`.
+_DATE_FORMATS = ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M")
 
 
 class DocumentLoadError(ValueError):
@@ -28,11 +64,55 @@ class LoadedDocument:
     source: str
     content: str
     content_type: str = "text/markdown"
+    effective_from: date | None = None
+    effective_until: date | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if (
+            self.effective_from
+            and self.effective_until
+            and self.effective_from > self.effective_until
+        ):
+            logger.warning(
+                "文档 %s 的生效区间倒置：effective_from=%s 晚于 effective_until=%s",
+                self.source,
+                self.effective_from,
+                self.effective_until,
+            )
 
     @property
     def checksum(self) -> str:
+        """Content-only fingerprint (unchanged semantics from the original loader)."""
+
         return hashlib.sha256(self.content.encode("utf-8")).hexdigest()
+
+    @property
+    def fingerprint(self) -> str:
+        """Identity that also distinguishes revised versions sharing the same body.
+
+        Two revisions of a policy with identical prose but different validity
+        windows produce the same :attr:`checksum`; dedupe on this instead.
+        """
+
+        payload = "|".join(
+            (
+                self.source,
+                self.content,
+                self.effective_from.isoformat() if self.effective_from else "",
+                self.effective_until.isoformat() if self.effective_until else "",
+                json.dumps(self.metadata, ensure_ascii=False, sort_keys=True, default=str),
+            )
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def is_effective_on(self, on: date | None = None) -> bool:
+        """Return whether the document's validity window covers ``on`` (default today)."""
+
+        on = on or date.today()
+        if self.effective_from and on < self.effective_from:
+            return False
+        return not (self.effective_until and on > self.effective_until)
 
 
 def normalize_text(raw: str) -> str:
@@ -45,8 +125,30 @@ def normalize_text(raw: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _iter_markdown_lines(text: str) -> Iterator[tuple[str, bool]]:
+    """Yield ``(line, is_inside_or_part_of_fence)`` for safe heading detection."""
+
+    fence: str | None = None
+    for line in text.splitlines():
+        fence_match = _FENCE_RE.match(line)
+        if fence_match:
+            marker = fence_match.group(1)[0]
+            if fence is None:
+                fence = marker
+            elif marker == fence:
+                fence = None
+            yield line, True
+            continue
+        yield line, fence is not None
+
+
 def _extract_frontmatter(text: str) -> tuple[dict[str, str], str]:
-    """Parse a small, dependency-free ``key: value`` frontmatter block."""
+    """Parse a small, dependency-free ``key: value`` frontmatter block.
+
+    A leading ``---`` is only treated as frontmatter when the block contains at
+    least one real colon-separated scalar. This avoids swallowing a document
+    that starts with a Markdown horizontal rule.
+    """
 
     match = _FRONTMATTER_RE.match(text)
     if not match:
@@ -66,15 +168,89 @@ def _extract_frontmatter(text: str) -> tuple[dict[str, str], str]:
             parsed = parsed[1:-1]
         metadata[key] = parsed
 
+    if not metadata:
+        logger.debug("leading --- block has no key: value lines; treating it as body")
+        return {}, text
+
     body = text[match.end() :].lstrip("\n")
     return metadata, body
 
 
+def _coerce_date(value: str) -> date | None:
+    """Parse a date written in any of the common frontmatter styles.
+
+    Accepts ISO-8601 (optionally with time and offset), ``2026/1/1``,
+    ``2026.1.1``, ``20260101`` and Chinese ``2026年1月1日``.
+    """
+
+    raw = value.strip()
+    if not raw:
+        return None
+
+    # 1) Strict ISO-8601 first, so offsets and timestamps are handled properly.
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
+    except ValueError:
+        pass
+
+    # 2) Collapse Chinese units and alternative separators down to "-".
+    cleaned = raw.replace("年", "-").replace("月", "-").replace("日", "")
+    cleaned = re.sub(r"[/._]", "-", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    # 3) Bare 8-digit form: 20260101 -> 2026-01-01.
+    if re.fullmatch(r"\d{8}", cleaned):
+        cleaned = f"{cleaned[:4]}-{cleaned[4:6]}-{cleaned[6:]}"
+
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(cleaned, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _normalize_dates(
+    frontmatter: dict[str, str],
+) -> tuple[dict[str, Any], date | None, date | None]:
+    """Normalize known date fields.
+
+    Returns ``(metadata, effective_from, effective_until)``. Parseable values are
+    rewritten to ISO-8601 in ``metadata`` (which also makes plain string sorting
+    chronological). Unparseable values keep their raw text and are left out of
+    the typed attributes, with a warning so data-quality issues stay visible.
+    """
+
+    meta: dict[str, Any] = dict(frontmatter)
+    if "effective_until" not in meta and "effective_to" in meta:
+        meta["effective_until"] = meta["effective_to"]
+    meta.pop("effective_to", None)
+    promoted: dict[str, date] = {}
+
+    for key in _DATE_KEYS:
+        if key not in meta:
+            continue
+        parsed = _coerce_date(str(meta[key]))
+        if parsed is None:
+            logger.warning("日期字段 %s=%r 无法解析，保留原值", key, meta[key])
+            continue
+        meta[key] = parsed.isoformat()
+        if key in _PROMOTED_DATE_KEYS:
+            promoted[key] = parsed
+
+    return meta, promoted.get("effective_from"), promoted.get("effective_until")
+
+
 def _infer_title(filename: str, content: str) -> str:
-    match = _H1_RE.search(content)
-    if match:
-        return match.group(1).strip()[:200]
-    for line in content.splitlines():
+    for line, is_fenced in _iter_markdown_lines(content):
+        if is_fenced:
+            continue
+        match = _H1_RE.match(line)
+        if match:
+            return match.group(1).strip()[:200]
+    for line, is_fenced in _iter_markdown_lines(content):
+        if is_fenced:
+            continue
         stripped = line.strip().lstrip("#").strip()
         if stripped:
             return stripped[:200]
@@ -82,11 +258,15 @@ def _infer_title(filename: str, content: str) -> str:
     return fallback or "Untitled document"
 
 
-def _decode(data: bytes) -> str:
-    try:
-        return data.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise DocumentLoadError("document must be UTF-8 encoded text") from exc
+def _decode(data: bytes) -> tuple[str, str]:
+    """Decode UTF-8 first, then common Chinese enterprise fallback GB18030."""
+
+    for encoding in ("utf-8-sig", "gb18030"):
+        try:
+            return data.decode(encoding), encoding
+        except UnicodeDecodeError:
+            continue
+    raise DocumentLoadError("document must be UTF-8 or GB18030 encoded text")
 
 
 def load_bytes(
@@ -113,21 +293,27 @@ def load_bytes(
         if guessed not in _TEXT_CONTENT_TYPES:
             raise DocumentLoadError(f"unsupported content type: {resolved_type}")
 
-    normalized = normalize_text(_decode(data))
+    decoded, encoding = _decode(data)
+    normalized = normalize_text(decoded)
     frontmatter, content = _extract_frontmatter(normalized)
     if not content:
         raise DocumentLoadError("document is empty after normalization")
 
+    meta, effective_from, effective_until = _normalize_dates(frontmatter)
+
     return LoadedDocument(
-        title=str(frontmatter.get("title") or _infer_title(clean_name, content))[:200],
+        title=str(meta.get("title") or _infer_title(clean_name, content))[:200],
         source=clean_name,
         content=content,
         content_type="text/markdown" if suffix in {".md", ".markdown"} else "text/plain",
+        effective_from=effective_from,
+        effective_until=effective_until,
         metadata={
-            **frontmatter,
+            **meta,
             "filename": clean_name,
             "extension": suffix,
             "size_bytes": len(data),
+            "encoding": encoding,
             "origin": "upload",
         },
     )
@@ -145,26 +331,39 @@ def load_file(path: str | Path, *, max_bytes: int = 2_000_000) -> LoadedDocument
     if size > max_bytes:
         raise DocumentLoadError(f"document exceeds the {max_bytes} byte limit")
 
-    normalized = normalize_text(_decode(file_path.read_bytes()))
+    decoded, encoding = _decode(file_path.read_bytes())
+    normalized = normalize_text(decoded)
     frontmatter, content = _extract_frontmatter(normalized)
     if not content:
         raise DocumentLoadError(f"document is empty: {file_path.name}")
 
+    meta, effective_from, effective_until = _normalize_dates(frontmatter)
+
     return LoadedDocument(
-        title=str(frontmatter.get("title") or _infer_title(file_path.name, content))[:200],
+        title=str(meta.get("title") or _infer_title(file_path.name, content))[:200],
         source=file_path.name,
         content=content,
         content_type="text/markdown"
         if file_path.suffix.lower() in {".md", ".markdown"}
         else "text/plain",
+        effective_from=effective_from,
+        effective_until=effective_until,
         metadata={
-            **frontmatter,
+            **meta,
             "filename": file_path.name,
             "extension": file_path.suffix.lower(),
             "size_bytes": size,
+            "encoding": encoding,
             "origin": "disk",
         },
     )
+
+
+def _is_ignored_relative(relative: Path) -> bool:
+    parts = relative.parts
+    if any(part.startswith(".") for part in parts):
+        return True
+    return any(part in _IGNORED_DIRS for part in parts)
 
 
 def load_directory(
@@ -172,8 +371,14 @@ def load_directory(
     *,
     recursive: bool = True,
     max_bytes: int = 2_000_000,
+    strict: bool = False,
 ) -> list[LoadedDocument]:
-    """Load every supported document in deterministic filename order."""
+    """Load every supported document in deterministic filename order.
+
+    Hidden/VCS/virtualenv/build directories are skipped. A broken file does not
+    abort the batch unless ``strict=True``; skipped files are logged with their
+    relative path and reason.
+    """
 
     directory = Path(path)
     if not directory.is_dir():
@@ -184,14 +389,22 @@ def load_directory(
         (
             candidate
             for candidate in iterator
-            if candidate.is_file() and candidate.suffix.lower() in SUPPORTED_SUFFIXES
+            if candidate.is_file()
+            and candidate.suffix.lower() in SUPPORTED_SUFFIXES
+            and not _is_ignored_relative(candidate.relative_to(directory))
         ),
         key=lambda candidate: candidate.relative_to(directory).as_posix(),
     )
     documents: list[LoadedDocument] = []
     for file_path in files:
-        loaded = load_file(file_path, max_bytes=max_bytes)
         source = file_path.relative_to(directory).as_posix()
+        try:
+            loaded = load_file(file_path, max_bytes=max_bytes)
+        except DocumentLoadError as exc:
+            if strict:
+                raise
+            logger.warning("skipping unreadable document %s: %s", source, exc)
+            continue
         metadata = {**loaded.metadata, "relative_path": source, "origin": "sample_corpus"}
         documents.append(
             LoadedDocument(
@@ -199,6 +412,8 @@ def load_directory(
                 source=source,
                 content=loaded.content,
                 content_type=loaded.content_type,
+                effective_from=loaded.effective_from,
+                effective_until=loaded.effective_until,
                 metadata=metadata,
             )
         )

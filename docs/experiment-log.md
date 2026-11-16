@@ -6,7 +6,7 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-10-26（E0–E2）；2026-10-28（E3）；2026-11-14（E4） |
+| 日期 | 2026-10-26（E0–E2）；2026-10-28（E3）；2026-11-14（E4）；2026-11-16（E5） |
 | OS | Windows |
 | Python | 3.12.5 |
 | 语料 | `data/sample_docs/` 7 篇（含 2025 历史版本），约 15 KB |
@@ -143,11 +143,40 @@
 
 **结论**：系统从“单次 RAG 问答”变成了“任务协作 + 经验沉淀 + 反馈迭代”的组织运行时。经验复用和多时点对比都已通过集成测试，但经验只做精确匹配、进化仍是同集调参，生产化前需要留出集和人工审批。
 
+## E5：文档→chunk 契约与解析鲁棒性
+
+**假设**：真正会导致“静默算错”的不是 embedding 算法，而是文本在 document → chunk 之间丢失来源、版本和边界；先修元数据链路和解析边界，收益高于换模型。
+
+**改动**：
+
+1. 新增 `split_document(LoadedDocument)`，chunk 继承 `source`、`checksum`、`policy_key`、`version`、`effective_from/until`、`relative_path`、`heading_path` 和 embedding 版本/维度。
+2. 标题按层级生成 `heading_path`，并跳过 fenced code block 中的 `#` 注释。
+3. 英文 `.` 只在后接空白时视为句子边界，避免小数被切开。
+4. `effective_from/effective_until` 在 loader 中提升为 `date`，`effective_to` 兼容别名归一为 ISO 日期。
+5. `tokenize` 修复 `Python代码` 丢失 `代码` bigram 的问题；数字+单位仍保留为 `3年`。
+6. `cosine_similarity` 对维度不匹配/空向量直接抛错，不再静默返回 0。
+7. loader 支持 GB18030 回退、frontmatter 横线误判防护、忽略 `.git/.venv/node_modules` 等目录、单文件失败隔离。
+8. overlap 不得超过 `chunk_size/2`，避免海量重复 chunk。
+9. 新增 8 个回归测试，总数 47。
+
+**验收结果**：
+
+| 指标 | 结果 |
+|---|---:|
+| 测试 | 47 passed |
+| 覆盖率 | 83% |
+| 21 题基线 | 21/21 |
+| 质量门禁 | PASS |
+| 延迟 | p50 8.1 ms，p95 8.6 ms |
+| Bandit | 0 findings |
+
+**结论**：chunk 现在知道自己来自哪份文档、哪个版本、哪个标题路径；日期和维度错误会显式失败。仍未处理列表项按条切分、最小 chunk、字符 offset 和跨 section overlap，这些是能力边界。
+
 ## 测试验证
 
 ```text
-39 passed
-coverage: 82%
+47 passed
+coverage: 83%
 ```
 
 覆盖内容包括：
@@ -159,6 +188,7 @@ coverage: 82%
 - 直接注入、间接注入、清洗器、正常安全讨论的误伤检查。
 - frontmatter 解析、as-of 命中历史版本、文档列表按日期过滤、重叠生效窗口 409、缺少生效日期 422。
 - 智能体团队状态、多时点对比、经验复用、反馈提升/抑制、受控进化和中文数字查询。
+- chunk 元数据/heading path、fenced code block、frontmatter 横线、GBK、英文分句、混合中英 token 和维度不匹配。
 
 ## 失败样例与观察
 
@@ -175,13 +205,13 @@ coverage: 82%
 
 | 编号 | 假设 | 设计 | 主要指标 |
 |---|---|---|---|
-| E5 | 同义改写会显著拉低哈希召回 | 为 21 题各写 3 个改写，不新增语料 | hit@5、拒答率 |
-| E6 | 干扰文档会暴露引用精确率问题 | 每篇主题加入 3 篇相似但错误的旧版本文档 | citation precision、pass rate |
-| E7 | 句子级归因比“文档级引用”更严格 | 标注支持句，加入 NLI/LLM judge | attribution accuracy |
-| E8 | 训练好的 embedding 优于哈希向量 | 同一切块和生成器，仅替换 embedding | MRR、hit@5、延迟 |
-| E9 | 抽取式生成器是当前上限 | 接入 OpenAI 兼容生成器，使用相同上下文 | 人工评分、faithfulness |
-| E10 | 规则注入防护存在误伤 | 构造 20 条“讨论注入而非执行注入”的问题 | false positive rate |
-| E11 | 权限过滤缺失是生产阻塞 | 增加文档 ACL 和租户隔离测试 | 越权率 |
+| E6 | 同义改写会显著拉低哈希召回 | 为 21 题各写 3 个改写，不新增语料 | hit@5、拒答率 |
+| E7 | 干扰文档会暴露引用精确率问题 | 每篇主题加入 3 篇相似但错误的旧版本文档 | citation precision、pass rate |
+| E8 | 句子级归因比“文档级引用”更严格 | 标注支持句，加入 NLI/LLM judge | attribution accuracy |
+| E9 | 训练好的 embedding 优于哈希向量 | 同一切块和生成器，仅替换 embedding | MRR、hit@5、延迟 |
+| E10 | 抽取式生成器是当前上限 | 接入 OpenAI 兼容生成器，使用相同上下文 | 人工评分、faithfulness |
+| E11 | 规则注入防护存在误伤 | 构造 20 条“讨论注入而非执行注入”的问题 | false positive rate |
+| E12 | 权限过滤缺失是生产阻塞 | 增加文档 ACL 和租户隔离测试 | 越权率 |
 
 ## 可复现命令
 
