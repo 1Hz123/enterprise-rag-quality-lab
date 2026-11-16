@@ -28,6 +28,16 @@ data/*.db-shm
 logs/
 *.log
 
+
+*.egg-info/
+pytest-of-*/
+.check-tmp/
+.ruff_cache/
+__pycache__/
+.pytest_cache/
+
+
+
 # Test / lint caches
 .pytest_cache/
 pytest-of-*/
