@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "Enterprise RAG Quality Lab"
-    app_version: str = "1.0.1"
+    app_version: str = "1.1.0"
     environment: Literal["development", "test", "production"] = "development"
     debug: bool = False
     log_level: str = "INFO"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sqlite3
 import uuid
 from datetime import date
@@ -20,6 +21,8 @@ from app.schemas import (
     DocumentDetail,
     DocumentList,
     DocumentSummary,
+    DocumentVersionList,
+    DocumentVersionOut,
     IngestResult,
 )
 
@@ -45,11 +48,52 @@ class PolicyConflictError(ValueError):
         self.document_id = document_id
 
 
+logger = logging.getLogger(__name__)
+
 _POLICY_METADATA_FIELDS = ("policy_key", "version", "effective_from", "effective_until")
 
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
+
+
+_VOLATILE_METADATA_KEYS = {
+    "filename",
+    "extension",
+    "size_bytes",
+    "encoding",
+    "origin",
+    "relative_path",
+}
+
+
+def document_identity(payload: DocumentCreate, content: str) -> str:
+    """Fingerprint the document substance, not its transport filename.
+
+    Same prose + same policy window is a duplicate even when uploaded under a
+    different filename. Same prose with a different effective window is a new
+    policy version and must be allowed to coexist.
+    """
+
+    metadata = {
+        key: value
+        for key, value in payload.metadata.items()
+        if key not in _VOLATILE_METADATA_KEYS
+    }
+    body = {
+        "content": content,
+        "policy_key": payload.policy_key,
+        "version": payload.version,
+        "effective_from": (
+            payload.effective_from.isoformat() if payload.effective_from else None
+        ),
+        "effective_until": (
+            payload.effective_until.isoformat() if payload.effective_until else None
+        ),
+        "metadata": metadata,
+    }
+    encoded = json.dumps(body, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def policy_fields_from_metadata(metadata: dict[str, Any]) -> dict[str, str]:
@@ -112,6 +156,7 @@ class DocumentService:
             source=row["source"],
             content_type=row["content_type"],
             checksum=row["checksum"],
+            fingerprint=row["fingerprint"],
             policy_key=row["policy_key"],
             version=row["version"],
             effective_from=_as_date(row["effective_from"]),
@@ -206,6 +251,58 @@ class DocumentService:
                 metadata[field_name] = value.isoformat() if isinstance(value, date) else value
         return metadata
 
+    def _loaded_for_payload(
+        self,
+        payload: DocumentCreate,
+        *,
+        content: str,
+        source: str | None = None,
+    ) -> LoadedDocument:
+        return LoadedDocument(
+            title=payload.title.strip(),
+            source=source or payload.source or "",
+            content=content,
+            content_type=payload.content_type,
+            effective_from=payload.effective_from,
+            effective_until=payload.effective_until,
+            metadata=self._metadata_with_policy(payload),
+        )
+
+    @staticmethod
+    def _record_version(connection: sqlite3.Connection, row: sqlite3.Row, now: str) -> None:
+        loaded = LoadedDocument(
+            title=row["title"],
+            source=row["source"],
+            content=row["content"],
+            content_type=row["content_type"],
+            effective_from=_as_date(row["effective_from"]),
+            effective_until=_as_date(row["effective_until"]),
+            metadata=json.loads(row["metadata_json"] or "{}"),
+        )
+        payload = document_create_from_loaded(loaded)
+        fingerprint = row["fingerprint"] or document_identity(payload, loaded.content)
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO document_versions
+                (id, document_id, version, policy_key, effective_from, effective_until,
+                 content, checksum, fingerprint, metadata_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"ver_{uuid.uuid4().hex}",
+                row["id"],
+                row["version"],
+                row["policy_key"],
+                row["effective_from"],
+                row["effective_until"],
+                row["content"],
+                row["checksum"],
+                fingerprint,
+                row["metadata_json"],
+                row["updated_at"] or now,
+            ),
+        )
+
     def create_document(self, payload: DocumentCreate) -> DocumentDetail:
         content = normalize_text(payload.content)
         if not content:
@@ -218,11 +315,13 @@ class DocumentService:
         document_id = f"doc_{uuid.uuid4().hex}"
         source = payload.source or f"manual/{document_id}.md"
         checksum = hashlib.sha256(content_bytes).hexdigest()
+        loaded = self._loaded_for_payload(payload, content=content, source=source)
+        fingerprint = document_identity(payload, content)
         now = utc_now()
 
         with self.db.connect() as connection:
             duplicate = connection.execute(
-                "SELECT id FROM documents WHERE checksum = ? LIMIT 1", (checksum,)
+                "SELECT id FROM documents WHERE fingerprint = ? LIMIT 1", (fingerprint,)
             ).fetchone()
             if duplicate:
                 raise DuplicateDocumentError(duplicate["id"])
@@ -236,23 +335,14 @@ class DocumentService:
             if conflict:
                 raise PolicyConflictError(conflict)
 
-            loaded = LoadedDocument(
-                title=title,
-                source=source,
-                content=content,
-                content_type=payload.content_type,
-                effective_from=payload.effective_from,
-                effective_until=payload.effective_until,
-                metadata=self._metadata_with_policy(payload),
-            )
             chunk_rows = self._build_chunk_rows(document_id, loaded, now)
             connection.execute(
                 """
                 INSERT INTO documents
-                    (id, title, source, content_type, content, checksum,
+                    (id, title, source, content_type, content, checksum, fingerprint,
                      policy_key, version, effective_from, effective_until,
                      metadata_json, status, chunk_count, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'indexed', ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'indexed', ?, ?, ?)
                 """,
                 (
                     document_id,
@@ -261,6 +351,7 @@ class DocumentService:
                     payload.content_type,
                     content,
                     checksum,
+                    fingerprint,
                     payload.policy_key,
                     payload.version,
                     payload.effective_from.isoformat() if payload.effective_from else None,
@@ -280,6 +371,11 @@ class DocumentService:
                 """,
                 chunk_rows,
             )
+            created_row = connection.execute(
+                "SELECT * FROM documents WHERE id = ?", (document_id,)
+            ).fetchone()
+            if created_row:
+                self._record_version(connection, created_row, now)
 
         return self.get_document(document_id)
 
@@ -294,14 +390,24 @@ class DocumentService:
 
         with self.db.connect() as connection:
             current = connection.execute(
-                "SELECT id FROM documents WHERE id = ?", (document_id,)
+                "SELECT * FROM documents WHERE id = ?", (document_id,)
             ).fetchone()
             if not current:
                 raise DocumentNotFoundError(document_id)
 
+            updated_loaded = LoadedDocument(
+                title=payload.title,
+                source=payload.source,
+                content=content,
+                content_type=payload.content_type,
+                effective_from=payload.effective_from,
+                effective_until=payload.effective_until,
+                metadata=self._metadata_with_policy(payload),
+            )
+            fingerprint = document_identity(payload, content)
             duplicate = connection.execute(
-                "SELECT id FROM documents WHERE checksum = ? AND id != ? LIMIT 1",
-                (checksum, document_id),
+                "SELECT id FROM documents WHERE fingerprint = ? AND id != ? LIMIT 1",
+                (fingerprint, document_id),
             ).fetchone()
             if duplicate:
                 raise DuplicateDocumentError(duplicate["id"])
@@ -316,23 +422,16 @@ class DocumentService:
             if conflict:
                 raise PolicyConflictError(conflict)
 
-            loaded = LoadedDocument(
-                title=payload.title,
-                source=payload.source,
-                content=content,
-                content_type=payload.content_type,
-                effective_from=payload.effective_from,
-                effective_until=payload.effective_until,
-                metadata=self._metadata_with_policy(payload),
-            )
-            chunk_rows = self._build_chunk_rows(document_id, loaded, now)
+            self._record_version(connection, current, now)
+            chunk_rows = self._build_chunk_rows(document_id, updated_loaded, now)
             connection.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))
             connection.execute(
                 """
                 UPDATE documents
                 SET title = ?, source = ?, content_type = ?, content = ?, checksum = ?,
-                    policy_key = ?, version = ?, effective_from = ?, effective_until = ?,
-                    metadata_json = ?, status = 'indexed', chunk_count = ?, updated_at = ?
+                    fingerprint = ?, policy_key = ?, version = ?, effective_from = ?,
+                    effective_until = ?, metadata_json = ?, status = 'indexed',
+                    chunk_count = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -341,6 +440,7 @@ class DocumentService:
                     payload.content_type,
                     content,
                     checksum,
+                    fingerprint,
                     payload.policy_key,
                     payload.version,
                     payload.effective_from.isoformat() if payload.effective_from else None,
@@ -360,6 +460,11 @@ class DocumentService:
                 """,
                 chunk_rows,
             )
+            updated_row = connection.execute(
+                "SELECT * FROM documents WHERE id = ?", (document_id,)
+            ).fetchone()
+            if updated_row:
+                self._record_version(connection, updated_row, now)
 
         return self.get_document(document_id)
 
@@ -417,6 +522,63 @@ class DocumentService:
             offset=offset,
         )
 
+    def list_versions(self, document_id: str) -> DocumentVersionList:
+        if not self.db.fetch_one("SELECT id FROM documents WHERE id = ?", (document_id,)):
+            raise DocumentNotFoundError(document_id)
+        rows = self.db.fetch_all(
+            """
+            SELECT *
+            FROM document_versions
+            WHERE document_id = ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (document_id,),
+        )
+        items = [
+            DocumentVersionOut(
+                id=row["id"],
+                document_id=row["document_id"],
+                version=row["version"],
+                policy_key=row["policy_key"],
+                effective_from=_as_date(row["effective_from"]),
+                effective_until=_as_date(row["effective_until"]),
+                checksum=row["checksum"],
+                fingerprint=row["fingerprint"],
+                content=row["content"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+        return DocumentVersionList(items=items, total=len(items))
+
+    def backfill_fingerprints(self) -> int:
+        """Compute fingerprints for rows created before the v1.1 schema."""
+
+        rows = self.db.fetch_all("SELECT * FROM documents WHERE fingerprint IS NULL")
+        updated = 0
+        for row in rows:
+            loaded = LoadedDocument(
+                title=row["title"],
+                source=row["source"],
+                content=row["content"],
+                content_type=row["content_type"],
+                effective_from=_as_date(row["effective_from"]),
+                effective_until=_as_date(row["effective_until"]),
+                metadata=json.loads(row["metadata_json"] or "{}"),
+            )
+            payload = document_create_from_loaded(loaded)
+            try:
+                with self.db.connect() as connection:
+                    connection.execute(
+                        "UPDATE documents SET fingerprint = ? WHERE id = ?",
+                        (document_identity(payload, loaded.content), row["id"]),
+                    )
+            except sqlite3.IntegrityError:
+                logger.warning("duplicate fingerprint while backfilling document %s", row["id"])
+                continue
+            updated += 1
+        return updated
+
     def delete_document(self, document_id: str) -> None:
         with self.db.connect() as connection:
             cursor = connection.execute("DELETE FROM documents WHERE id = ?", (document_id,))
@@ -471,39 +633,28 @@ class DocumentService:
         ingested = 0
         updated = 0
         skipped = 0
+        errors: list[str] = []
         touched: list[DocumentSummary] = []
 
         for loaded in loaded_documents:
             existing = self.find_by_source(loaded.source)
             payload = document_create_from_loaded(loaded)
-            policy_changed = existing is not None and (
-                existing.policy_key,
-                existing.version,
-                existing.effective_from,
-                existing.effective_until,
-            ) != (
-                payload.policy_key,
-                payload.version,
-                payload.effective_from,
-                payload.effective_until,
-            )
-            metadata_changed = existing is not None and (
-                existing.title != payload.title
-                or existing.content_type != payload.content_type
-                or existing.metadata != payload.metadata
-            )
+            fingerprint = document_identity(payload, loaded.content)
             try:
                 if existing is None:
                     created = self.create_document(payload)
                     touched.append(DocumentSummary(**created.model_dump(exclude={"content"})))
                     ingested += 1
-                elif existing.checksum != loaded.checksum or policy_changed or metadata_changed:
+                elif existing.fingerprint != fingerprint:
                     refreshed = self.update_from_loaded(existing.id, loaded)
                     touched.append(DocumentSummary(**refreshed.model_dump(exclude={"content"})))
                     updated += 1
                 else:
                     skipped += 1
-            except DuplicateDocumentError:
+            except DuplicateDocumentError as exc:
+                message = f"{loaded.source}: {exc}"
+                logger.warning("skipping duplicate document: %s", message)
+                errors.append(message)
                 skipped += 1
 
         return IngestResult(
@@ -511,6 +662,7 @@ class DocumentService:
             updated=updated,
             skipped=skipped,
             documents=touched,
+            errors=errors,
         )
 
     def seed_sample_documents(self) -> IngestResult:

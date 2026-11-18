@@ -39,6 +39,8 @@ class Citation:
     effective_until: str | None
     snippet: str
     score: float
+    quote: str | None = None
+    quote_verified: bool = False
 
 
 @dataclass(slots=True)
@@ -53,6 +55,10 @@ class RagResult:
     prompt_version: str
     mode: str
     metrics: dict[str, Any] = field(default_factory=dict)
+    raw_answer: str = ""
+    invalid_citation_count: int = 0
+    invalid_citation_rate: float = 0.0
+    fallback_used: bool = False
 
 
 class RAGPipeline:
@@ -200,7 +206,13 @@ class RAGPipeline:
             )
 
         generation: Generation = self.generator.generate(prepared, items)
-        text, used_indices = self._validate_generation(generation, len(items))
+        (
+            text,
+            used_indices,
+            invalid_count,
+            raw_marker_count,
+            raw_text,
+        ) = self._validate_generation(generation, len(items))
         item_by_index = {item.index: item for item in items}
         citations = [
             Citation(
@@ -216,15 +228,25 @@ class RAGPipeline:
                 effective_until=item_by_index[index].chunk.effective_until,
                 snippet=item_by_index[index].text[:280],
                 score=item_by_index[index].chunk.score,
+                quote=generation.quotes.get(index),
+                quote_verified=bool(
+                    generation.quotes.get(index)
+                    and generation.quotes[index] in item_by_index[index].text
+                ),
             )
             for index in used_indices
             if index in item_by_index
         ]
 
+        invalid_rate = invalid_count / raw_marker_count if raw_marker_count else 0.0
         metrics = {
             **base_metrics,
             "citation_count": len(citations),
             "cited_sources": sorted({citation.source for citation in citations}),
+            "raw_citation_count": raw_marker_count,
+            "invalid_citation_count": invalid_count,
+            "invalid_citation_rate": round(invalid_rate, 4),
+            "fallback_used": generation.fallback_used,
         }
         return RagResult(
             answer=text,
@@ -237,6 +259,10 @@ class RAGPipeline:
             prompt_version=PROMPT_VERSION,
             mode=self.generator.mode,
             metrics=metrics,
+            raw_answer=raw_text,
+            invalid_citation_count=invalid_count,
+            invalid_citation_rate=invalid_rate,
+            fallback_used=generation.fallback_used,
         )
 
     def _blocked_result(self, question: str, as_of: date, started: float) -> RagResult:
@@ -301,18 +327,22 @@ class RAGPipeline:
         return len(query_tokens.intersection(context_tokens)) / len(query_tokens)
 
     @staticmethod
-    def _validate_generation(generation: Generation, context_count: int) -> tuple[str, list[int]]:
-        """Remove impossible citation numbers and return explicit used indices."""
+    def _validate_generation(
+        generation: Generation,
+        context_count: int,
+    ) -> tuple[str, list[int], int, int, str]:
+        """Remove impossible citation numbers, preserving raw audit counters."""
 
-        text = generation.text.strip()
-        if not text:
-            text = NO_CONTEXT_ANSWER
+        raw_text = generation.text.strip()
+        text = raw_text or NO_CONTEXT_ANSWER
 
-        markers = {int(match) for match in _CITATION_RE.findall(text)}
-        invalid = {marker for marker in markers if marker < 1 or marker > context_count}
-        for marker in invalid:
+        raw_markers = [int(match) for match in _CITATION_RE.findall(text)]
+        invalid = [marker for marker in raw_markers if marker < 1 or marker > context_count]
+        for marker in set(invalid):
             text = text.replace(f"[{marker}]", "")
 
         used = {index for index in generation.used_indices if 1 <= index <= context_count}
-        used.update(marker for marker in markers if marker not in invalid)
-        return text.strip(), sorted(used)
+        used.update(
+            marker for marker in raw_markers if 1 <= marker <= context_count
+        )
+        return text.strip(), sorted(used), len(invalid), len(raw_markers), raw_text

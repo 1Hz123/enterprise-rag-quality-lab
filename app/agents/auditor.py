@@ -47,6 +47,8 @@ class AuditorAgent:
             checks["safe_refusal"] = not result.citations
             checks["citations_present"] = True
             checks["markers_valid"] = True
+            checks["quotes_supported"] = True
+            checks["no_invalid_citations"] = result.invalid_citation_count == 0
             checks["temporal_valid"] = True
             checks["multi_task_coverage"] = True
             checks["security_clear"] = True
@@ -59,6 +61,11 @@ class AuditorAgent:
             markers = {int(match) for match in _CITATION_RE.findall(result.answer)}
             citation_indices = {citation.index for citation in result.citations}
             checks["markers_valid"] = bool(markers) and markers.issubset(citation_indices)
+            checks["quotes_supported"] = all(
+                not citation.quote or citation.quote_verified
+                for citation in result.citations
+            )
+            checks["no_invalid_citations"] = result.invalid_citation_count == 0
             checks["temporal_valid"] = self._temporal_valid(plan, result, sub_answers)
             checks["multi_task_coverage"] = self._multi_task_coverage(plan, sub_answers)
             checks["security_clear"] = not result.security_blocked
@@ -67,6 +74,10 @@ class AuditorAgent:
                 findings.append("answer has no citations")
             if not checks["markers_valid"]:
                 findings.append("citation markers do not match citation list")
+            if not checks["quotes_supported"]:
+                findings.append("citation quote is not present in its chunk")
+            if not checks["no_invalid_citations"]:
+                findings.append("generation emitted invalid citation markers")
             if not checks["temporal_valid"]:
                 findings.append("citation is outside its effective window")
             if not checks["multi_task_coverage"]:

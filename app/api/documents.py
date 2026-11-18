@@ -11,6 +11,7 @@ from app.schemas import (
     DocumentCreate,
     DocumentDetail,
     DocumentList,
+    DocumentVersionList,
     IngestResult,
 )
 from app.services.document_service import (
@@ -121,6 +122,14 @@ def list_documents(
 def get_document(document_id: str, request: Request) -> DocumentDetail:
     try:
         return request.app.state.document_service.get_document(document_id)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.get("/{document_id}/versions", response_model=DocumentVersionList)
+def list_document_versions(document_id: str, request: Request) -> DocumentVersionList:
+    try:
+        return request.app.state.document_service.list_versions(document_id)
     except DocumentNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 

@@ -20,7 +20,7 @@ from app.agents.types import (
 )
 from app.config import Settings
 from app.rag.pipeline import RAGPipeline, RagResult
-from app.rag.prompt import INJECTION_ANSWER, looks_like_prompt_injection
+from app.rag.prompt import INJECTION_ANSWER, PROMPT_VERSION, looks_like_prompt_injection
 from app.rag.query import normalize_query
 
 
@@ -122,6 +122,7 @@ class IntelligentOrganization:
                     resolved_as_of,
                     result,
                     quality_score=audit.quality_score,
+                    signature=self._experience_signature(),
                 )
                 if record:
                     experiences.append(record)
@@ -179,13 +180,25 @@ class IntelligentOrganization:
             metrics=result.metrics,
         )
 
+    def _experience_signature(self) -> str:
+        return (
+            f"{PROMPT_VERSION}|{self.pipeline.generator.mode}|"
+            f"{self.settings.embedding_provider}:{self.settings.embedding_dimension}|"
+            f"top_k:{self.settings.top_k}|chunk:{self.settings.chunk_size}/"
+            f"{self.settings.chunk_overlap}"
+        )
+
     def _try_experience(
         self,
         question: str,
         as_of: date,
         started: float,
     ) -> OrganizationResult | None:
-        record = self.experience.find_reusable(question, as_of)
+        record = self.experience.find_reusable(
+            question,
+            as_of,
+            signature=self._experience_signature(),
+        )
         if not record:
             return None
         result = RagResult(

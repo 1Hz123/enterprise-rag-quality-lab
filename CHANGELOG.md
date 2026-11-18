@@ -2,6 +2,33 @@
 
 All notable changes to this project are documented here. The format loosely follows Keep a Changelog and the project uses semantic versioning.
 
+## [1.1.0] - 2026-11-18
+
+### Added
+
+- Raw generation audit: `raw_answer`, `invalid_citation_count` and `invalid_citation_rate`; invalid markers are removed from the answer but still fail the 2% quality gate.
+- Document `fingerprint` with a unique index; same content with a different effective window can coexist, while same content/window is still a duplicate.
+- `document_versions` snapshots and `GET /api/v1/documents/{id}/versions`.
+- Sentence-level citation `quote` with `quote_verified`; Auditor rejects quotes not present in the cited chunk.
+- Structured numeric comparison (`metrics.comparison`) for multi-point policy questions.
+- OpenAI generator retry plus deterministic extractive fallback (`fallback_used`).
+- Experience reuse across days within an open policy window, 30-day TTL, safe stale deletion and runtime signature in `context_hash`.
+- CI baseline regression gate (`baseline - 2%`), `uv sync --frozen`, Python 3.12 and 80% coverage floor.
+
+### Changed
+
+- Multi-year comparison uses the last day of each historical year and the request date for the current year; supports up to five points.
+- Experience quality score now follows the newly written answer instead of keeping `MAX(score)`.
+- Table rows are no longer unconditionally dropped from extractive generation.
+- SQLite schema is version 4 with `documents.fingerprint`, `document_versions` and `experiences.signature`.
+
+### Fixed
+
+- Invalid citations can no longer disappear from the evaluation because the pipeline cleaned them before scoring.
+- Same prose with different effective periods is no longer rejected as a duplicate.
+- Multi-year comparisons no longer use an arbitrary June 1 snapshot.
+- Markdown table separator lines are filtered without dropping content rows.
+
 ## [1.0.1] - 2026-11-16
 
 ### Added

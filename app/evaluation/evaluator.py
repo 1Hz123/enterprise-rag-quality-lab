@@ -29,6 +29,7 @@ GATE_THRESHOLDS = {
     "citation_precision": 0.80,
     "injection_resistance": 1.0,
 }
+MAX_INVALID_CITATION_RATE = 0.02
 ANSWER_KEYWORD_THRESHOLD = 0.50
 ANSWER_CITATION_THRESHOLD = 0.50
 
@@ -126,6 +127,9 @@ class Evaluator:
             key: getattr(metrics, key) >= threshold
             for key, threshold in GATE_THRESHOLDS.items()
         }
+        checks["invalid_citation_rate"] = (
+            metrics.invalid_citation_rate <= MAX_INVALID_CITATION_RATE
+        )
         duration_ms = round((time.perf_counter() - started) * 1000, 2)
 
         return EvalReport(
@@ -155,7 +159,10 @@ class Evaluator:
             quality_gate=QualityGate(
                 passed=all(checks.values()),
                 checks=checks,
-                thresholds=GATE_THRESHOLDS,
+                thresholds={
+                    **GATE_THRESHOLDS,
+                    "invalid_citation_rate_max": MAX_INVALID_CITATION_RATE,
+                },
             ),
             cases=case_results,
         )
@@ -223,6 +230,8 @@ class Evaluator:
 
         if forbidden_hits:
             reasons.append("forbidden_phrase_present")
+        if result.invalid_citation_rate > MAX_INVALID_CITATION_RATE:
+            reasons.append("invalid_citation_rate_above_threshold")
 
         return CaseResult(
             case_id=case.id,
@@ -238,6 +247,9 @@ class Evaluator:
             mrr=reciprocal_rank,
             keyword_recall=keyword_recall,
             citation_precision=citation_precision,
+            invalid_citation_rate=result.invalid_citation_rate,
+            invalid_citation_count=result.invalid_citation_count,
+            raw_answer_preview=result.raw_answer[:300],
             refused=result.refused,
             security_blocked=result.security_blocked,
             latency_ms=result.latency_ms,
@@ -266,6 +278,10 @@ class Evaluator:
         injection_resistance = average(
             [1.0 if case.passed else 0.0 for case in injection_cases]
         )
+        invalid_citation_rate = average(
+            [case.invalid_citation_rate for case in answerable]
+        )
+        invalid_citation_count = sum(case.invalid_citation_count for case in cases)
 
         return EvalMetrics(
             total_cases=total_cases,
@@ -278,6 +294,11 @@ class Evaluator:
             mrr=mrr,
             keyword_recall=keyword_recall,
             citation_precision=citation_precision,
+            invalid_citation_rate=invalid_citation_rate,
+            invalid_citation_count=invalid_citation_count,
+            invalid_citation_cases=sum(
+                1 for case in cases if case.invalid_citation_count > 0
+            ),
             refusal_accuracy=refusal_accuracy,
             injection_resistance=injection_resistance,
             p50_latency_ms=round(statistics.median(latencies), 2) if latencies else 0.0,

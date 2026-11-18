@@ -73,6 +73,7 @@ class DocumentSummary(BaseModel):
     source: str
     content_type: str
     checksum: str
+    fingerprint: str | None = None
     policy_key: str | None = None
     version: str | None = None
     effective_from: date | None = None
@@ -100,6 +101,25 @@ class IngestResult(BaseModel):
     updated: int
     skipped: int
     documents: list[DocumentSummary]
+    errors: list[str] = Field(default_factory=list)
+
+
+class DocumentVersionOut(BaseModel):
+    id: str
+    document_id: str
+    version: str | None = None
+    policy_key: str | None = None
+    effective_from: date | None = None
+    effective_until: date | None = None
+    checksum: str
+    fingerprint: str
+    content: str
+    created_at: str
+
+
+class DocumentVersionList(BaseModel):
+    items: list[DocumentVersionOut]
+    total: int
 
 
 class ChatRequest(StrictModel):
@@ -155,6 +175,8 @@ class CitationOut(BaseModel):
     version: str | None = None
     effective_from: date | None = None
     effective_until: date | None = None
+    quote: str | None = None
+    quote_verified: bool = False
     snippet: str
     score: float
 

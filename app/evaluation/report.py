@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 
 
 class EvalMetrics(BaseModel):
@@ -22,6 +22,9 @@ class EvalMetrics(BaseModel):
     mrr: float
     keyword_recall: float
     citation_precision: float
+    invalid_citation_rate: float = 0.0
+    invalid_citation_count: int = 0
+    invalid_citation_cases: int = 0
     refusal_accuracy: float
     injection_resistance: float
     p50_latency_ms: float
@@ -50,6 +53,9 @@ class CaseResult(BaseModel):
     mrr: float
     keyword_recall: float | None = None
     citation_precision: float | None = None
+    invalid_citation_rate: float = 0.0
+    invalid_citation_count: int = 0
+    raw_answer_preview: str = ""
     refused: bool
     security_blocked: bool
     latency_ms: float
@@ -104,6 +110,7 @@ def render_summary(report: EvalReport) -> str:
         ),
         (
             f"Citation precision {metrics.citation_precision:.1%} | "
+            f"invalid citations {metrics.invalid_citation_rate:.1%} | "
             f"refusal {metrics.refusal_accuracy:.1%} | "
             f"injection resistance {metrics.injection_resistance:.1%}"
         ),
@@ -132,6 +139,7 @@ def compare_reports(current: EvalReport, baseline: EvalReport) -> list[str]:
         ("mrr", "MRR"),
         ("keyword_recall", "keyword recall"),
         ("citation_precision", "citation precision"),
+        ("invalid_citation_rate", "invalid citation rate"),
         ("injection_resistance", "injection resistance"),
         ("p95_latency_ms", "p95 latency (ms)"),
     )

@@ -50,6 +50,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             resolved_settings,
         )
         document_service = DocumentService(database, resolved_settings, embeddings)
+        backfilled = document_service.backfill_fingerprints()
+        if backfilled:
+            logger.info("backfilled fingerprints for %s documents", backfilled)
         chat_service = ChatService(database, organization_runtime)
         evaluator = Evaluator(pipeline, resolved_settings)
         evolver = EvolutionAgent(pipeline, evaluator, resolved_settings)
@@ -73,6 +76,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 result.updated,
                 result.skipped,
             )
+            if result.errors:
+                logger.warning("sample corpus skipped documents: %s", result.errors)
         logger.info(
             "RAG lab ready: db=%s provider=%s",
             resolved_settings.database_path,

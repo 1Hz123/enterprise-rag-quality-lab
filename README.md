@@ -33,7 +33,9 @@
 - **完全离线的默认链路**：哈希向量 + BM25 混合检索 + 抽取式生成，零外部服务依赖。
 - **可替换生成器**：默认 `extractive`，也支持 OpenAI 兼容的 Chat Completions 接口。
 - **可追溯 chunk**：每个 chunk 继承 `source`、`checksum`、制度版本、生效日期和 `heading_path`；引用可定位到来源与版本。
+- **可信评测**：保留生成器原始输出，单独统计非法引用率并纳入 2% 门禁；引用带可校验的句子级 `quote`。
 - **制度版本时间旅行**：按 `as_of` 查询历史时点的有效制度；旧版本自动失效，重叠生效窗口会被拒绝。
+- **版本快照与指纹**：`fingerprint` 唯一约束区分“同正文不同生效期”，`document_versions` 保留每次改版内容。
 - **经验沉淀与复用**：审计通过且质量达标的回答进入经验库；上下文变化后自动失效。
 - **反馈闭环**：用户评分可提升或抑制经验；低分经验会被删除。
 - **受控进化**：`POST /api/v1/organization/evolve` 在固定评测集上搜索覆盖率阈值，默认只给建议，显式 `apply=true` 才在当前进程生效。
@@ -75,8 +77,8 @@ uvicorn app.main:app --reload
 ### 方式三：Docker
 
 ```bash
-docker build -t enterprise-rag-quality-lab:1.0.1 .
-docker run --rm -p 8000:8000 enterprise-rag-quality-lab:1.0.1
+docker build -t enterprise-rag-quality-lab:1.1.0 .
+docker run --rm -p 8000:8000 enterprise-rag-quality-lab:1.1.0
 ```
 
 镜像基于 `python:3.11-slim`，使用非 root 用户，暴露 8000，并带 `/health` 健康检查。详见 [Dockerfile](Dockerfile)。
@@ -183,6 +185,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/organization/evolve \
 | `POST` | `/api/v1/documents/upload` | 上传 UTF-8 的 `.md` / `.txt` |
 | `POST` | `/api/v1/documents/ingest-sample` | 幂等同步示例语料 |
 | `GET` | `/api/v1/documents/{id}` | 文档详情和完整正文 |
+| `GET` | `/api/v1/documents/{id}/versions` | 版本快照与历史正文 |
 | `POST` | `/api/v1/documents/{id}/reindex` | 重建切块和向量 |
 | `DELETE` | `/api/v1/documents/{id}` | 删除文档（级联删除切块） |
 | `POST` | `/api/v1/chat` | 智能组织问答；支持 `as_of` |
@@ -205,6 +208,8 @@ python eval/run_eval.py --output eval/results/baseline.json
 python eval/run_eval.py `
   --database data/eval.db `
   --output eval/results/ci.json `
+  --baseline eval/results/baseline.json `
+  --max-regression 0.02 `
   --fail-under-pass-rate 0.80 `
   --fail-under-hit-rate 0.85 `
   --require-quality-gate
@@ -221,10 +226,11 @@ python eval/run_eval.py `
 | MRR | 1.000 |
 | 关键词覆盖率 | 100% |
 | 引用准确率 | 100% |
+| 非法引用率 | 0.0% |
 | 拒答正确率 | 100% |
 | 提示注入抵抗率 | 100% |
-| 延迟 p50 | 8.1 ms |
-| 延迟 p95 | 8.6 ms |
+| 延迟 p50 | 7.5 ms |
+| 延迟 p95 | 7.6 ms |
 
 运行环境：Windows、Python 3.12.5、SQLite、本地 `hashing-384` 向量、`extractive` 生成器，21 道题单次本地运行。延迟只代表本机进程内计算，不代表生产 SLA。
 
@@ -353,7 +359,7 @@ enterprise-rag-quality-lab/
 │   ├── dataset.jsonl        # 21 道固定问题
 │   ├── run_eval.py
 │   └── results/baseline.json
-├── tests/                   # 47 个 API / RAG / 版本 / 摄入 / 智能组织 / 注入测试
+├── tests/                   # 53 个 API / RAG / 版本 / 摄入 / 审计 / 智能组织 / 注入测试
 ├── scripts/ingest.py
 ├── docs/                    # 架构、实验日志、安全审计
 ├── docs/audit/              # License / CVE / Bandit 原始报告
@@ -387,7 +393,7 @@ python -m ruff check .
 python -m pytest --cov=app --cov-report=term-missing
 ```
 
-当前测试：47 项、覆盖率 83%，覆盖 API CRUD、聊天引用、拒答、运行轨迹、切块、检索、21 题评测、制度版本、中文数字、chunk 元数据透传、代码块/GBK/英文分句、智能体协作、经验复用、反馈和受控进化。CI 在 Python 3.11 与 3.12 上执行 lint、测试和评测门禁，并额外执行依赖漏洞扫描、License 检查、Bandit 和 Docker 健康检查。
+当前测试：53 项、覆盖率 83%，覆盖 API CRUD、聊天引用、拒答、运行轨迹、切块、检索、21 题评测、制度版本、中文数字、chunk 元数据透传、代码块/GBK/英文分句、原始非法引用审计、fingerprint 判重、版本快照、句子级 quote、经验跨天复用、智能体协作和注入防护。CI 使用锁定依赖在 Python 3.12 上执行 lint、80% 覆盖率门禁、基线回归门禁、依赖漏洞扫描、License 检查、Bandit 和 Docker 健康检查。
 
 > 如果受限 Windows 沙箱阻止 pytest 创建临时目录，可预先创建 `data/pytest-runtime` 并设置 `RAG_LAB_TEST_DIR` 指向它。
 

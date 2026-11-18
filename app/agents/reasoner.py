@@ -12,12 +12,14 @@ from app.knowledge.retriever import RetrievedChunk
 from app.rag.pipeline import Citation, RAGPipeline, RagResult
 
 _CITATION_RE = re.compile(r"\[(\d{1,2})\]")
-_FACT_RE = re.compile(r"\d+(?:\.\d+)?\s*(?:个工作日|天|个月|小时|分钟|元|%)")
+_FACT_RE = re.compile(
+    r"(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>个工作日|天|个月|小时|分钟|元|%)"
+)
 
 
 def _facts(text: str) -> list[str]:
     cleaned = _CITATION_RE.sub("", text)
-    return list(dict.fromkeys(_FACT_RE.findall(cleaned)))
+    return list(dict.fromkeys(match.group(0) for match in _FACT_RE.finditer(cleaned)))
 
 
 def _renumber_text(text: str, mapping: dict[int, int]) -> str:
@@ -122,7 +124,7 @@ class ReasonerAgent:
                 f"{renumbered.strip()}"
             )
 
-        comparison = self._compare(sub_answers)
+        comparison, comparison_data = self._compare(sub_answers)
         answer = (
             "按制度生效日期对比：\n"
             + "\n".join(sections)
@@ -161,7 +163,27 @@ class ReasonerAgent:
                     default=0.0,
                 ),
                 "as_of": (final_as_of or plan.as_of).isoformat(),
+                "comparison": comparison_data,
+                "invalid_citation_count": sum(
+                    answer.result.invalid_citation_count for answer in sub_answers
+                ),
+                "invalid_citation_rate": max(
+                    (answer.result.invalid_citation_rate for answer in sub_answers),
+                    default=0.0,
+                ),
+                "fallback_used": any(
+                    answer.result.fallback_used for answer in sub_answers
+                ),
             },
+            invalid_citation_count=sum(
+                answer.result.invalid_citation_count for answer in sub_answers
+            ),
+            invalid_citation_rate=max(
+                (answer.result.invalid_citation_rate for answer in sub_answers),
+                default=0.0,
+            ),
+            fallback_used=any(answer.result.fallback_used for answer in sub_answers),
+            raw_answer=answer,
         )
         trace = AgentTrace(
             agent=self.name,
@@ -174,17 +196,64 @@ class ReasonerAgent:
         return result, sub_answers, trace
 
     @staticmethod
-    def _compare(sub_answers: list[SubAnswer]) -> str:
+    def _compare(sub_answers: list[SubAnswer]) -> tuple[str, dict[str, object]]:
+        """Compare numeric facts unit-by-unit and keep a structured audit record."""
+
         facts_by_label = [
             (answer.subtask.label, _facts(answer.result.answer)) for answer in sub_answers
         ]
-        non_empty = [(label, facts) for label, facts in facts_by_label if facts]
-        if non_empty:
-            fact_sets = {tuple(facts) for _, facts in non_empty}
-            if len(fact_sets) == 1:
-                return "两个时点的关键数值一致：" + "、".join(non_empty[0][1])
-            return "；".join(f"{label}为 {'、'.join(facts)}" for label, facts in non_empty)
+        parsed: dict[str, dict[str, str]] = {}
+        for label, facts in facts_by_label:
+            by_unit: dict[str, str] = {}
+            for fact in facts:
+                match = _FACT_RE.fullmatch(fact)
+                if match:
+                    by_unit[match.group("unit")] = match.group("value")
+            parsed[label] = by_unit
+
+        units = sorted({unit for values in parsed.values() for unit in values})
+        changed: list[dict[str, str]] = []
+        unchanged: list[dict[str, str]] = []
+        for unit in units:
+            values = {
+                label: values[unit]
+                for label, values in parsed.items()
+                if unit in values
+            }
+            if len(set(values.values())) > 1:
+                changed.append({"unit": unit, **values})
+            elif values:
+                unchanged.append({"unit": unit, **values})
+
         texts = [answer.result.answer.strip() for answer in sub_answers]
+        data: dict[str, object] = {
+            "labels": [label for label, _ in facts_by_label],
+            "facts": {label: facts for label, facts in facts_by_label},
+            "changed": changed,
+            "unchanged": unchanged,
+            "text_changed": len(set(texts)) > 1,
+        }
+        if changed:
+            groups: list[str] = []
+            for row in changed:
+                unit = str(row["unit"])
+                labels = [
+                    f"{label} {value}{unit}"
+                    for label, value in row.items()
+                    if label != "unit"
+                ]
+                groups.append("、".join(labels))
+            text = "关键数值变化：" + "；".join(groups)
+            if unchanged:
+                text += "。未变：" + "、".join(str(row["unit"]) for row in unchanged)
+            return text, data
+        if unchanged:
+            groups = []
+            for row in unchanged:
+                unit = str(row["unit"])
+                values = [value for key, value in row.items() if key != "unit"]
+                groups.append(f"{unit} " + "/".join(values))
+            return "关键数值未变：" + "、".join(groups), data
         if len(set(texts)) > 1:
-            return "两个时点的制度表述存在差异，具体以各版本引用为准。"
-        return "两个时点的规定未发现差异。"
+            return "两个以上时点的制度表述存在差异，具体以各版本引用为准。", data
+        return "各时点的规定未发现差异。", data

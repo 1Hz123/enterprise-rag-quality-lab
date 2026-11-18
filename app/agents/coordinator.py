@@ -8,8 +8,29 @@ from datetime import date
 
 from app.agents.types import AgentTrace, Plan, Subtask
 
-_YEAR_RE = re.compile(r"(20\d{2})\s*年")
-_COMPARISON_TERMS = ("区别", "对比", "差异", "变化", "相比", "不同", "分别")
+_YEAR_RE = re.compile(r"(20\d{2})\s*(?:年|年度)?")
+_COMPARISON_TERMS = (
+    "区别",
+    "对比",
+    "差异",
+    "变化",
+    "相比",
+    "不同",
+    "分别",
+    "前后",
+    "新旧",
+    "哪些调整",
+    "有何调整",
+)
+_MAX_COMPARISON_POINTS = 5
+
+
+def _comparison_as_of(year: int, base_as_of: date) -> date:
+    """Use a real policy date, not an arbitrary mid-year snapshot."""
+
+    if year == base_as_of.year:
+        return base_as_of
+    return date(year, 12, 31)
 
 
 class CoordinatorAgent:
@@ -23,12 +44,12 @@ class CoordinatorAgent:
         should_compare = len(years) >= 2 and any(term in question for term in _COMPARISON_TERMS)
 
         if should_compare:
-            selected_years = years[:2]
+            selected_years = years[:_MAX_COMPARISON_POINTS]
             subtasks = [
                 Subtask(
                     id=f"year-{year}",
                     question=question,
-                    as_of=date(year, 6, 1),
+                    as_of=_comparison_as_of(year, base_as_of),
                     label=f"{year} 年时点",
                     reason="历史/当前版本对比",
                 )
@@ -39,8 +60,8 @@ class CoordinatorAgent:
                 as_of=base_as_of,
                 subtasks=subtasks,
                 rationale=(
-                    f"检测到 {selected_years[0]} 与 {selected_years[1]} 两个时点及对比意图，"
-                    "按生效日期分别检索，再由推理智能体合并。"
+                    f"检测到 {len(selected_years)} 个时点及对比意图，按各年最后有效日期"
+                    "（当前年用请求日期）分别检索，再由推理智能体合并。"
                 ),
             )
             detail = f"拆分为 {len(subtasks)} 个时点子任务"

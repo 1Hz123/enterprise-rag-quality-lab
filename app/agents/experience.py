@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import uuid
 from dataclasses import asdict
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from app.agents.types import ExperienceRecord
@@ -15,6 +16,10 @@ from app.db import Database, utc_now
 from app.knowledge.retriever import RetrievedChunk
 from app.rag.pipeline import Citation, RagResult
 from app.rag.query import normalize_query
+
+logger = logging.getLogger(__name__)
+
+EXPERIENCE_TTL_DAYS = 30
 
 
 class ExperienceNotFoundError(LookupError):
@@ -53,7 +58,7 @@ class ExperienceService:
     def __init__(self, db: Database) -> None:
         self.db = db
 
-    def _context_hash(self, citations: list[Citation]) -> str | None:
+    def _context_hash(self, citations: list[Citation], signature: str = "") -> str | None:
         chunk_ids = [citation.chunk_id for citation in citations]
         if not chunk_ids:
             return None
@@ -68,6 +73,8 @@ class ExperienceService:
         if len(rows) != len(set(chunk_ids)):
             return None
         digest = hashlib.sha256()
+        digest.update(signature.encode("utf-8"))
+        digest.update(b"\x00")
         for row in sorted(rows, key=lambda item: item["id"]):
             digest.update(str(row["id"]).encode())
             digest.update(b"\x00")
@@ -107,10 +114,11 @@ class ExperienceService:
         result: RagResult,
         *,
         quality_score: float,
+        signature: str = "",
     ) -> ExperienceRecord | None:
         if result.refused or not result.citations:
             return None
-        context_hash = self._context_hash(result.citations)
+        context_hash = self._context_hash(result.citations, signature)
         if not context_hash:
             return None
 
@@ -124,16 +132,19 @@ class ExperienceService:
                 """
                 INSERT INTO experiences
                     (id, question, normalized_question, as_of, answer, citations_json,
-                     retrieved_json, quality_score, context_hash, uses, created_at,
+                     retrieved_json, quality_score, context_hash, signature, uses, created_at,
                      last_used_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL)
                 ON CONFLICT(normalized_question, as_of) DO UPDATE SET
                     question = excluded.question,
                     answer = excluded.answer,
                     citations_json = excluded.citations_json,
                     retrieved_json = excluded.retrieved_json,
-                    quality_score = MAX(experiences.quality_score, excluded.quality_score),
-                    context_hash = excluded.context_hash
+                    quality_score = excluded.quality_score,
+                    context_hash = excluded.context_hash,
+                    signature = excluded.signature,
+                    created_at = excluded.created_at,
+                    last_used_at = NULL
                 """,
                 (
                     experience_id,
@@ -145,6 +156,7 @@ class ExperienceService:
                     _json(retrieved),
                     quality_score,
                     context_hash,
+                    signature,
                     now,
                 ),
             )
@@ -154,32 +166,83 @@ class ExperienceService:
         )
         return self._row_record(row) if row else None
 
-    def find_reusable(self, question: str, as_of: date) -> ExperienceRecord | None:
-        normalized = _normalize_question(question)
-        row = self.db.fetch_one(
-            "SELECT * FROM experiences WHERE normalized_question = ? AND as_of = ?",
-            (normalized, as_of.isoformat()),
-        )
-        if not row:
-            return None
-        record = self._row_record(row)
-        if self._context_hash(record.citations) != row["context_hash"]:
-            # The source document changed after this experience was captured.
-            self.delete_experience(record.id)
-            return None
+    @staticmethod
+    def _citations_cover(citations: list[Citation], as_of: date) -> bool:
+        for citation in citations:
+            try:
+                if citation.effective_from and date.fromisoformat(citation.effective_from) > as_of:
+                    return False
+                if (
+                    citation.effective_until
+                    and date.fromisoformat(citation.effective_until) < as_of
+                ):
+                    return False
+            except ValueError:
+                return False
+        return bool(citations)
 
-        now = utc_now()
-        with self.db.connect() as connection:
-            connection.execute(
-                """
-                UPDATE experiences
-                SET uses = uses + 1, last_used_at = ?
-                WHERE id = ?
-                """,
-                (now, record.id),
+    @staticmethod
+    def _is_expired(created_at: str) -> bool:
+        try:
+            created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        except ValueError:
+            return True
+        return created < datetime.now(UTC) - timedelta(days=EXPERIENCE_TTL_DAYS)
+
+    def _safe_delete(self, experience_id: str) -> None:
+        try:
+            self.delete_experience(experience_id)
+        except ExperienceNotFoundError:
+            logger.debug("experience already removed: %s", experience_id)
+        except Exception:
+            logger.exception("failed to delete stale experience: %s", experience_id)
+
+    def find_reusable(
+        self,
+        question: str,
+        as_of: date,
+        *,
+        signature: str = "",
+    ) -> ExperienceRecord | None:
+        normalized = _normalize_question(question)
+        rows = self.db.fetch_all(
+            """
+            SELECT *
+            FROM experiences
+            WHERE normalized_question = ?
+            ORDER BY created_at DESC
+            """,
+            (normalized,),
+        )
+        for row in rows:
+            record = self._row_record(row)
+            if self._is_expired(record.created_at):
+                self._safe_delete(record.id)
+                continue
+            if row["signature"] != signature:
+                continue
+            if not self._citations_cover(record.citations, as_of):
+                continue
+            if self._context_hash(record.citations, signature) != row["context_hash"]:
+                # The source document changed after this experience was captured.
+                self._safe_delete(record.id)
+                continue
+
+            now = utc_now()
+            with self.db.connect() as connection:
+                connection.execute(
+                    """
+                    UPDATE experiences
+                    SET uses = uses + 1, last_used_at = ?
+                    WHERE id = ?
+                    """,
+                    (now, record.id),
+                )
+            refreshed = self.db.fetch_one(
+                "SELECT * FROM experiences WHERE id = ?", (record.id,)
             )
-        refreshed = self.db.fetch_one("SELECT * FROM experiences WHERE id = ?", (record.id,))
-        return self._row_record(refreshed) if refreshed else None
+            return self._row_record(refreshed) if refreshed else None
+        return None
 
     def list_experiences(
         self,

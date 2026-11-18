@@ -12,7 +12,7 @@ import math
 import re
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 from urllib.parse import urlparse
 
@@ -24,7 +24,7 @@ from app.rag.prompt import (
     build_messages,
 )
 
-_SENTENCE_RE = re.compile(r"(?<=[。！？!?；;])\s*|\n+")
+_SENTENCE_RE = re.compile(r"(?<=[。！？!?；;])\s*|(?<=[.!?])\s+|\n+")
 _BULLET_RE = re.compile(r"^\s{0,3}(?:[-*+]|\d+[.)])\s+")
 _CITATION_RE = re.compile(r"\[(\d{1,2})\]")
 _NUMERIC_INTENT_TERMS = (
@@ -54,6 +54,8 @@ class Generation:
     text: str
     used_indices: list[int]
     refused: bool = False
+    quotes: dict[int, str] = field(default_factory=dict)
+    fallback_used: bool = False
 
 
 class Generator(Protocol):
@@ -69,7 +71,10 @@ def _sentences(text: str) -> list[str]:
         if not sentence or sentence.startswith("#"):
             continue
         sentence = _BULLET_RE.sub("", sentence).strip()
-        if len(sentence) < 6 or sentence.startswith("|"):
+        if len(sentence) < 6:
+            continue
+        if set(sentence) <= set("|-: "):
+            # Markdown table separator, not a content row.
             continue
         sentences.append(sentence)
     return sentences
@@ -175,6 +180,7 @@ class ExtractiveGenerator:
                 selected.append(candidate)
 
         used_indices: set[int] = set()
+        quotes: dict[int, str] = {}
         parts: list[str] = []
         total_chars = 0
         for _, item, sentence in selected:
@@ -183,6 +189,7 @@ class ExtractiveGenerator:
                 break
             parts.append(rendered)
             used_indices.add(item.index)
+            quotes.setdefault(item.index, sentence)
             total_chars += len(rendered)
 
         if not parts:
@@ -191,7 +198,7 @@ class ExtractiveGenerator:
         answer = "根据知识库资料：" + " ".join(parts)
         if len(answer) > self.max_answer_chars:
             answer = answer[: self.max_answer_chars].rstrip() + "…"
-        return Generation(text=answer, used_indices=sorted(used_indices))
+        return Generation(text=answer, used_indices=sorted(used_indices), quotes=quotes)
 
 
 class OpenAICompatibleGenerator:
@@ -237,16 +244,25 @@ class OpenAICompatibleGenerator:
             method="POST",
         )
 
-        try:
-            # Scheme and host are validated in __init__; this is an
-            # operator-configured endpoint, not user input.
-            with urllib.request.urlopen(  # nosec B310
-                request,
-                timeout=self.timeout_seconds,
-            ) as response:
-                body = json.loads(response.read().decode("utf-8"))
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            raise GenerationError(f"generator request failed: {type(exc).__name__}") from exc
+        last_error: Exception | None = None
+        body: dict[str, object] | None = None
+        for attempt in range(2):
+            try:
+                # Scheme and host are validated in __init__; this is an
+                # operator-configured endpoint, not user input.
+                with urllib.request.urlopen(  # nosec B310
+                    request,
+                    timeout=self.timeout_seconds,
+                ) as response:
+                    body = json.loads(response.read().decode("utf-8"))
+                break
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+                last_error = exc
+                if attempt == 0:
+                    continue
+        if body is None:
+            error_name = type(last_error).__name__ if last_error else "unknown"
+            raise GenerationError(f"generator request failed: {error_name}") from last_error
 
         try:
             text = body["choices"][0]["message"]["content"].strip()
@@ -268,17 +284,41 @@ class OpenAICompatibleGenerator:
         return Generation(text=text, used_indices=valid_indices, refused=refused)
 
 
+class FallbackGenerator:
+    """Retry remote generation, then fall back to the deterministic generator."""
+
+    def __init__(self, primary: Generator, fallback: Generator) -> None:
+        self.primary = primary
+        self.fallback = fallback
+        self.mode = f"{primary.mode}+extractive"
+
+    def generate(self, question: str, items: list[ContextItem]) -> Generation:
+        try:
+            return self.primary.generate(question, items)
+        except GenerationError:
+            generation = self.fallback.generate(question, items)
+            return Generation(
+                text=generation.text,
+                used_indices=generation.used_indices,
+                refused=generation.refused,
+                quotes=generation.quotes,
+                fallback_used=True,
+            )
+
+
 def build_generator(settings: Settings) -> Generator:
     if settings.generator_provider == "extractive":
         return ExtractiveGenerator(max_answer_chars=settings.max_answer_chars)
     if settings.generator_provider == "openai":
         if settings.openai_api_key is None:
             raise GenerationError("OPENAI_API_KEY is required for the openai generator")
-        return OpenAICompatibleGenerator(
+        primary = OpenAICompatibleGenerator(
             api_key=settings.openai_api_key.get_secret_value(),
             base_url=settings.openai_base_url,
             model=settings.openai_model,
             timeout_seconds=settings.openai_timeout_seconds,
             max_answer_chars=settings.max_answer_chars,
         )
+        fallback = ExtractiveGenerator(max_answer_chars=settings.max_answer_chars)
+        return FallbackGenerator(primary, fallback)
     raise GenerationError(f"unsupported generator provider: {settings.generator_provider}")

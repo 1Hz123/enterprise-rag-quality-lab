@@ -6,7 +6,7 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-10-26（E0–E2）；2026-10-28（E3）；2026-11-14（E4）；2026-11-16（E5） |
+| 日期 | 2026-10-26（E0–E2）；2026-10-28（E3）；2026-11-14（E4）；2026-11-16（E5）；2026-11-18（E6） |
 | OS | Windows |
 | Python | 3.12.5 |
 | 语料 | `data/sample_docs/` 7 篇（含 2025 历史版本），约 15 KB |
@@ -172,10 +172,41 @@
 
 **结论**：chunk 现在知道自己来自哪份文档、哪个版本、哪个标题路径；日期和维度错误会显式失败。仍未处理列表项按条切分、最小 chunk、字符 offset 和跨 section overlap，这些是能力边界。
 
+## E6：让指标与版本身份可信
+
+**假设**：如果评测只清洗后的答案，非法引用会被“修好”而指标不降；如果 fingerprint 只看正文，同正文不同生效期无法共存。先修评测输入和身份，再谈召回优化。
+
+**改动**：
+
+1. `RagResult` 保留 `raw_answer`，pipeline 在删除非法引用前统计 `invalid_citation_count` 和 `invalid_citation_rate`。
+2. `EvalMetrics` / `CaseResult` 增加非法引用指标，质量门禁要求非法引用率 ≤ 2%；测试用伪造 `[99]` 生成器验证门禁会失败。
+3. `documents.fingerprint` 唯一索引：同正文、同生效期、不同文件名仍判重；同正文、不同生效期允许共存。
+4. `document_versions` 表与 `GET /documents/{id}/versions`：创建和改版都保留内容快照。
+5. 多时点按“该年最后有效日期”拆分，当前年使用请求日期；支持最多 5 个年份。
+6. 对比输出结构化数值 diff（按单位比较变化/未变），并写入 `metrics.comparison`。
+7. 引用增加句子级 `quote` 与 `quote_verified`，Auditor 检查 quote 必须出现在 chunk 中。
+8. OpenAI 生成器失败重试一次，再回退抽取式；回答保留 `fallback_used`。
+9. 经验库按引用生效窗口跨天复用，30 天 TTL，context hash 纳入 prompt、生成器、embedding、top_k、chunk 参数。
+10. CI 改为 `uv sync --frozen`、Python 3.12、覆盖率 80% 门禁和 baseline-2% 回归门禁。
+
+**验收结果**：
+
+| 指标 | 结果 |
+|---|---:|
+| 测试 | 53 passed |
+| 覆盖率 | 83% |
+| 21 题基线 | 21/21 |
+| 非法引用率 | 0.0%（门禁 ≤ 2%） |
+| 质量门禁 | PASS |
+| 延迟 | p50 7.5 ms，p95 7.6 ms |
+| Bandit | 0 findings |
+
+**结论**：非法引用不再被静默清洗，fingerprint 能区分版本窗口，版本快照和句子级 quote 可审计。**没有完成** 100+ 题库/30% holdout、旧 `as_of` 的版本化 chunk 检索和完整生产鉴权；这些仍在下一阶段。
+
 ## 测试验证
 
 ```text
-47 passed
+53 passed
 coverage: 83%
 ```
 
@@ -189,6 +220,7 @@ coverage: 83%
 - frontmatter 解析、as-of 命中历史版本、文档列表按日期过滤、重叠生效窗口 409、缺少生效日期 422。
 - 智能体团队状态、多时点对比、经验复用、反馈提升/抑制、受控进化和中文数字查询。
 - chunk 元数据/heading path、fenced code block、frontmatter 横线、GBK、英文分句、混合中英 token 和维度不匹配。
+- 原始非法引用率/门禁、fingerprint 判重、同正文不同生效期、版本快照、句子级 quote、经验跨天复用。
 
 ## 失败样例与观察
 
@@ -205,13 +237,13 @@ coverage: 83%
 
 | 编号 | 假设 | 设计 | 主要指标 |
 |---|---|---|---|
-| E6 | 同义改写会显著拉低哈希召回 | 为 21 题各写 3 个改写，不新增语料 | hit@5、拒答率 |
-| E7 | 干扰文档会暴露引用精确率问题 | 每篇主题加入 3 篇相似但错误的旧版本文档 | citation precision、pass rate |
-| E8 | 句子级归因比“文档级引用”更严格 | 标注支持句，加入 NLI/LLM judge | attribution accuracy |
-| E9 | 训练好的 embedding 优于哈希向量 | 同一切块和生成器，仅替换 embedding | MRR、hit@5、延迟 |
-| E10 | 抽取式生成器是当前上限 | 接入 OpenAI 兼容生成器，使用相同上下文 | 人工评分、faithfulness |
-| E11 | 规则注入防护存在误伤 | 构造 20 条“讨论注入而非执行注入”的问题 | false positive rate |
-| E12 | 权限过滤缺失是生产阻塞 | 增加文档 ACL 和租户隔离测试 | 越权率 |
+| E7 | 同义改写会显著拉低哈希召回 | 为 21 题各写 3 个改写，不新增语料 | hit@5、拒答率 |
+| E8 | 干扰文档会暴露引用精确率问题 | 每篇主题加入 3 篇相似但错误的旧版本文档 | citation precision、pass rate |
+| E9 | 句子级归因比“文档级引用”更严格 | 标注支持句，加入 NLI/LLM judge | attribution accuracy |
+| E10 | 训练好的 embedding 优于哈希向量 | 同一切块和生成器，仅替换 embedding | MRR、hit@5、延迟 |
+| E11 | 抽取式生成器是当前上限 | 接入 OpenAI 兼容生成器，使用相同上下文 | 人工评分、faithfulness |
+| E12 | 规则注入防护存在误伤 | 构造 20 条“讨论注入而非执行注入”的问题 | false positive rate |
+| E13 | 权限过滤缺失是生产阻塞 | 增加文档 ACL 和租户隔离测试 | 越权率 |
 
 ## 可复现命令
 

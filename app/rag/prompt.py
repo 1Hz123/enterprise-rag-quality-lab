@@ -52,7 +52,7 @@ _INJECTION_PATTERNS = (
 _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 _CONTEXT_TAG_RE = re.compile(r"</?context>", re.IGNORECASE)
 _SPECIAL_TOKEN_RE = re.compile(r"<\|(?:im_start|im_end|system|user|assistant)\|>", re.IGNORECASE)
-_SENTENCE_RE = re.compile(r"(?<=[。！？!?；;\n])")
+_SENTENCE_RE = re.compile(r"(?<=[。！？!?；;\n])|(?<=[.!?])\s+")
 
 
 def looks_like_prompt_injection(text: str) -> bool:

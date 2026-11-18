@@ -75,6 +75,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fail-under-pass-rate", type=float, default=None)
     parser.add_argument("--fail-under-hit-rate", type=float, default=None)
     parser.add_argument(
+        "--max-regression",
+        type=float,
+        default=0.02,
+        help="Allowed drop versus --baseline for pass/hit/citation metrics.",
+    )
+    parser.add_argument(
         "--require-quality-gate",
         action="store_true",
         help="Fail when any built-in quality gate check fails.",
@@ -124,6 +130,7 @@ def main() -> int:
         _emit(render_summary(report))
         _emit(f"report: {output_path}")
 
+    baseline = None
     if args.baseline:
         baseline = load_report(args.baseline)
         _emit("baseline comparison:")
@@ -131,6 +138,26 @@ def main() -> int:
             _emit(f"  {row}")
 
     exit_code = 0
+    if baseline is not None:
+        regressions: list[str] = []
+        for field, label in (
+            ("pass_rate", "pass_rate"),
+            ("retrieval_hit_rate", "retrieval_hit_rate"),
+            ("citation_precision", "citation_precision"),
+        ):
+            current_value = getattr(report.metrics, field)
+            floor = getattr(baseline.metrics, field) - args.max_regression
+            if current_value < floor:
+                regressions.append(f"{label} {current_value:.3f} < {floor:.3f}")
+        if report.metrics.invalid_citation_rate > baseline.metrics.invalid_citation_rate + 0.02:
+            regressions.append(
+                "invalid_citation_rate "
+                f"{report.metrics.invalid_citation_rate:.3f} > "
+                f"{baseline.metrics.invalid_citation_rate + 0.02:.3f}"
+            )
+        if regressions:
+            logger.error("baseline regression: %s", "; ".join(regressions))
+            exit_code = 1
     if (
         args.fail_under_pass_rate is not None
         and report.metrics.pass_rate < args.fail_under_pass_rate

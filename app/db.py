@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS documents (
     content_type    TEXT NOT NULL DEFAULT 'text/markdown',
     content         TEXT NOT NULL,
     checksum        TEXT NOT NULL,
+    fingerprint     TEXT,
     policy_key      TEXT,
     version         TEXT,
     effective_from  TEXT,
@@ -37,6 +38,24 @@ CREATE TABLE IF NOT EXISTS documents (
 
 CREATE INDEX IF NOT EXISTS idx_documents_checksum ON documents(checksum);
 CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source);
+
+CREATE TABLE IF NOT EXISTS document_versions (
+    id              TEXT PRIMARY KEY,
+    document_id     TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    version         TEXT,
+    policy_key      TEXT,
+    effective_from  TEXT,
+    effective_until TEXT,
+    content         TEXT NOT NULL,
+    checksum        TEXT NOT NULL,
+    fingerprint     TEXT NOT NULL,
+    metadata_json   TEXT NOT NULL DEFAULT '{}',
+    created_at      TEXT NOT NULL,
+    UNIQUE(document_id, fingerprint)
+);
+
+CREATE INDEX IF NOT EXISTS idx_document_versions_document
+ON document_versions(document_id, created_at);
 
 CREATE TABLE IF NOT EXISTS chunks (
     id             TEXT PRIMARY KEY,
@@ -97,6 +116,7 @@ CREATE TABLE IF NOT EXISTS experiences (
     retrieved_json      TEXT NOT NULL DEFAULT '[]',
     quality_score       REAL NOT NULL DEFAULT 0,
     context_hash        TEXT NOT NULL,
+    signature           TEXT NOT NULL DEFAULT '',
     uses                INTEGER NOT NULL DEFAULT 0,
     created_at          TEXT NOT NULL,
     last_used_at        TEXT,
@@ -153,23 +173,32 @@ class Database:
         with self.connect() as connection:
             connection.execute("PRAGMA journal_mode = WAL")
             connection.executescript(SCHEMA_SQL)
-            self._migrate_document_policy_columns(connection)
+            self._migrate_document_columns(connection)
+            self._migrate_experience_columns(connection)
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_documents_policy_window
                 ON documents(policy_key, effective_from, effective_until)
                 """
             )
+            connection.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_documents_fingerprint
+                ON documents(fingerprint)
+                WHERE fingerprint IS NOT NULL
+                """
+            )
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     @staticmethod
-    def _migrate_document_policy_columns(connection: sqlite3.Connection) -> None:
-        """Add policy-version columns to databases created before v0.2."""
+    def _migrate_document_columns(connection: sqlite3.Connection) -> None:
+        """Add policy/fingerprint columns to databases created before v1.1."""
 
         existing = {
             row["name"] for row in connection.execute("PRAGMA table_info(documents)").fetchall()
         }
         additions = {
+            "fingerprint": "TEXT",
             "policy_key": "TEXT",
             "version": "TEXT",
             "effective_from": "TEXT",
@@ -178,6 +207,16 @@ class Database:
         for name, sql_type in additions.items():
             if name not in existing:
                 connection.execute(f"ALTER TABLE documents ADD COLUMN {name} {sql_type}")
+
+    @staticmethod
+    def _migrate_experience_columns(connection: sqlite3.Connection) -> None:
+        existing = {
+            row["name"] for row in connection.execute("PRAGMA table_info(experiences)").fetchall()
+        }
+        if "signature" not in existing:
+            connection.execute(
+                "ALTER TABLE experiences ADD COLUMN signature TEXT NOT NULL DEFAULT ''"
+            )
 
     def ping(self) -> bool:
         with self.connect() as connection:
