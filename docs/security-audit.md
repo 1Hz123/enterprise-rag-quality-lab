@@ -1,7 +1,7 @@
 # 依赖、License 与漏洞审计
 
-审计日期：2026-11-14；代码复核：2026-11-18
-项目版本：1.1.0
+审计日期：2026-11-14；代码复核：2026-11-23
+项目版本：1.2.0
 范围：`uv.lock` 锁定的 Python 依赖 + `app/` 源码
 环境：Windows、Python 3.12.5、uv 0.13.1
 
@@ -51,11 +51,14 @@ Windows 路径把 `/bin/python` 换成 `\Scripts\python.exe`，site-packages 换
 | PSF-2.0 / PSF License | 2 | 宽松 |
 | MPL-2.0（certifi） | 1 | 文件级弱 copyleft，仅开发依赖 |
 
+> v1.2 新增 `redis`（MIT）、`hiredis`（BSD-3-Clause）和开发依赖 `fakeredis`（BSD-3-Clause）。上面的包数量来自 v1.1 的 License JSON 快照；新增依赖不改变“无 GPL/AGPL/LGPL”的结论，完整重新生成 License JSON 仍需在镜像源恢复后执行。
+
 **结论：**
 
 - 没有 GPL、AGPL、LGPL 依赖。
-- 运行时 21 个包全部为 MIT、Apache-2.0、BSD、PSF 等宽松许可。
+- 运行时 25 个包（含 `redis` MIT、`hiredis` BSD-3-Clause）全部为宽松许可。
 - `certifi`（MPL-2.0）只通过开发依赖 `httpx` 引入，不进入运行时镜像。
+- v1.2 新增的 `fakeredis` / `sortedcontainers` 仅为开发测试依赖，不是运行时依赖。
 - 项目自身为 MIT License。
 - 没有修改第三方源码；如分发容器，保留依赖包的 License/Notice 即可。
 
@@ -68,6 +71,8 @@ Windows 路径把 `/bin/python` 换成 `\Scripts\python.exe`，site-packages 换
 | pydantic-settings | 2.16.2 | MIT |
 | python-multipart | 0.0.33 | Apache-2.0 |
 | uvicorn | 0.54.0 | BSD-3-Clause |
+| redis | 8.1.0 | MIT |
+| hiredis | 3.5.0 | BSD-3-Clause |
 
 完整清单和 URL 见 [dependency-licenses-all.json](audit/dependency-licenses-all.json) 与 [dependency-licenses.json](audit/dependency-licenses.json)。
 
@@ -76,7 +81,7 @@ Windows 路径把 `/bin/python` 换成 `\Scripts\python.exe`，site-packages 换
 ### 运行时依赖
 
 ```text
-dependencies: 21
+dependencies: 25
 known vulnerabilities: 0
 fixes: 0
 ```
@@ -86,7 +91,7 @@ fixes: 0
 ### 全依赖（含 dev / security）
 
 ```text
-dependencies: 62
+dependencies: 67
 known vulnerabilities: 0
 fixes: 0
 ```
@@ -101,7 +106,7 @@ fixes: 0
 |---|---|---|---|
 | pytest | 8.4.2 | PYSEC-2026-1845 / CVE-2025-71176（开发环境 tmp 目录问题） | 升级到 pytest 9.2.0 |
 
-升级后 53 项测试全部通过，全依赖 CVE 归零。
+升级后 69 项测试全部通过，全依赖 CVE 归零。
 
 ## 4. Bandit 源码扫描
 
@@ -126,8 +131,8 @@ fixes: 0
 本地 Docker daemon 在本次审计时未运行，因此没有完成本机镜像启动；Dockerfile 和 smoke test 已纳入 CI。构建命令：
 
 ```bash
-docker build -t enterprise-rag-quality-lab:1.1.0 .
-docker run --rm -p 8000:8000 enterprise-rag-quality-lab:1.1.0
+docker build -t enterprise-rag-quality-lab:1.2.0 .
+docker run --rm -p 8000:8000 enterprise-rag-quality-lab:1.2.0
 ```
 
 ## 6. CI 安全门禁

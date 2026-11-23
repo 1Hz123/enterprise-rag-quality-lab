@@ -36,6 +36,12 @@ pytest-of-*/
 __pycache__/
 .pytest_cache/
 
+# Temp directories created when tempfile falls back to the repo root
+rag-lab-tests-*/
+tmp[a-z0-9]*/
+rag-db-check*/
+.test-tmp/
+
 
 
 # Test / lint caches

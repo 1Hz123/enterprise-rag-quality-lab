@@ -23,6 +23,7 @@ jobs:
       PYTHONUTF8: "1"
       PYTHONDONTWRITEBYTECODE: "1"
       RAG_LAB_ENVIRONMENT: test
+      CACHE_ENABLED: "false"
 
     steps:
       - name: Checkout
@@ -50,6 +51,7 @@ jobs:
       - name: Evaluate quality gate
         run: |
           uv run python eval/run_eval.py \
+            --no-cache \
             --name ci \
             --database data/ci.db \
             --output eval/results/ci.json \

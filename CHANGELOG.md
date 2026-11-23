@@ -2,6 +2,35 @@
 
 All notable changes to this project are documented here. The format loosely follows Keep a Changelog and the project uses semantic versioning.
 
+## [1.2.0] - 2026-11-23
+
+### Added
+
+- Opt-in Redis cache (`CACHE_ENABLED=false` by default) with `redis.asyncio` and one application-wide connection pool.
+- Three exact-cache layers: float32 embedding vectors, versioned retrieval results and final answers.
+- Cache abstraction in `app/core/cache.py`: `CacheBackend`, `RedisCacheBackend`, `NullCacheBackend`, `CacheManager`, `CacheRead`.
+- Safe fail-open path with 50–100ms socket budgets, an operation timeout, consecutive-error circuit breaker and cooldown.
+- Process-local singleflight with post-lock double-check and bounded lock wait.
+- SHA-256-only key namespace with env/prefix/scope, TTL jitter, index-version namespace and ACL/tenant isolation guidance.
+- Optional negative retrieval cache (disabled by default) with a short TTL.
+- Structured `cache_hit` / `cache_miss` / `cache_error` / `cache_cooldown_skip` logs, layer metrics and `/health.cache`.
+- `scripts/cache_cli.py` SCAN + UNLINK prefix cleanup, plus `docker-compose.yml` Redis 7 Alpine service.
+- Offline evaluation defaults to no cache; `--cache` enables it explicitly and reports per-case/per-layer cache metrics.
+- `fakeredis` tests for hit/miss, TTL, float32 roundtrip, version invalidation, fail-open, slow-connection timeout, cooldown, SCAN cleanup, negative cache and singleflight.
+- `.env.example` documents every cache key with default-off comments.
+
+### Changed
+
+- `utc_now()` now uses microsecond precision, making the retrieval index manifest change reliably after a same-second reindex.
+- `/health` includes Redis connection state, last error, cooldown, hit/miss/error metrics and current index version.
+- Docker tags, README, architecture and test counts updated for v1.2.0.
+
+### Notes
+
+- Semantic cache (`SEMANTIC_CACHE_ENABLED`) remains an opt-in reserved layer and is not part of the exact-cache path or default evaluation conclusions.
+- Cache failures never fail startup or business requests; the uncached path is used instead.
+- Singleflight is per process; multi-instance cold misses can repeat up to the number of instances.
+
 ## [1.1.0] - 2026-11-18
 
 ### Added

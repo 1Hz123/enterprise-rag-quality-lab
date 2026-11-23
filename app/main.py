@@ -14,6 +14,7 @@ from app.agents.orchestrator import IntelligentOrganization
 from app.api import chat, documents, health, organization, runs
 from app.api import eval as eval_api
 from app.config import Settings, get_settings
+from app.core.cache import CacheBackend, build_cache
 from app.db import Database
 from app.evaluation.evaluator import Evaluator
 from app.knowledge.embeddings import build_embeddings
@@ -26,7 +27,11 @@ from app.services.document_service import DocumentService
 logger = logging.getLogger(__name__)
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    cache_backend: CacheBackend | None = None,
+) -> FastAPI:
     resolved_settings = (settings or get_settings()).resolve_paths()
 
     @asynccontextmanager
@@ -36,13 +41,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         database = Database(resolved_settings.database_path)
         database.initialize()
+        cache_manager = build_cache(resolved_settings, backend=cache_backend)
+        cache_manager.start()
         embeddings = build_embeddings(
             resolved_settings.embedding_provider,
             resolved_settings.embedding_dimension,
+            cache=cache_manager,
         )
-        retriever = Retriever(database, embeddings)
+        retriever = Retriever(database, embeddings, cache=cache_manager)
         generator = build_generator(resolved_settings)
-        pipeline = RAGPipeline(retriever, generator, resolved_settings)
+        pipeline = RAGPipeline(
+            retriever,
+            generator,
+            resolved_settings,
+            cache=cache_manager,
+        )
         experience_service = ExperienceService(database)
         organization_runtime = IntelligentOrganization(
             pipeline,
@@ -58,6 +71,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         evolver = EvolutionAgent(pipeline, evaluator, resolved_settings)
 
         app.state.db = database
+        app.state.cache = cache_manager
         app.state.embeddings = embeddings
         app.state.retriever = retriever
         app.state.pipeline = pipeline
@@ -83,7 +97,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             resolved_settings.database_path,
             resolved_settings.generator_provider,
         )
-        yield
+        try:
+            yield
+        finally:
+            cache_manager.close()
 
     app = FastAPI(
         title=resolved_settings.app_name,

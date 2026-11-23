@@ -174,6 +174,9 @@ class ReasonerAgent:
                 "fallback_used": any(
                     answer.result.fallback_used for answer in sub_answers
                 ),
+                "cache_hit": any(
+                    bool(answer.result.metrics.get("cache_hit")) for answer in sub_answers
+                ),
             },
             invalid_citation_count=sum(
                 answer.result.invalid_citation_count for answer in sub_answers

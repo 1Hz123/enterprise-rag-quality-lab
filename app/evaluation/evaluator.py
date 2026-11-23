@@ -153,6 +153,11 @@ class Evaluator:
                 "prompt_version": PROMPT_VERSION,
                 "answer_keyword_threshold": ANSWER_KEYWORD_THRESHOLD,
                 "answer_citation_threshold": ANSWER_CITATION_THRESHOLD,
+                "cache_enabled": bool(
+                    self.pipeline.cache is not None and self.pipeline.cache.enabled
+                ),
+                "cache_scope": self.settings.cache_scope,
+                "semantic_cache_enabled": self.settings.semantic_cache_enabled,
             },
             metrics=metrics,
             category_pass_rates=category_pass_rates,
@@ -233,6 +238,10 @@ class Evaluator:
         if result.invalid_citation_rate > MAX_INVALID_CITATION_RATE:
             reasons.append("invalid_citation_rate_above_threshold")
 
+        cache_metrics = result.metrics.get("cache", {})
+        cache_dict = cache_metrics if isinstance(cache_metrics, dict) else {}
+        cache_layers = list(cache_dict.get("layers", {}).keys())
+
         return CaseResult(
             case_id=case.id,
             category=case.category,
@@ -249,6 +258,12 @@ class Evaluator:
             citation_precision=citation_precision,
             invalid_citation_rate=result.invalid_citation_rate,
             invalid_citation_count=result.invalid_citation_count,
+            cache_hit=bool(cache_dict.get("hit")),
+            cache_layers=cache_layers,
+            cache_hits=int(cache_dict.get("hits", 0)),
+            cache_misses=int(cache_dict.get("misses", 0)),
+            cache_errors=int(cache_dict.get("errors", 0)),
+            cache_saved_ms=float(cache_dict.get("saved_ms", 0.0)),
             raw_answer_preview=result.raw_answer[:300],
             refused=result.refused,
             security_blocked=result.security_blocked,
@@ -282,6 +297,11 @@ class Evaluator:
             [case.invalid_citation_rate for case in answerable]
         )
         invalid_citation_count = sum(case.invalid_citation_count for case in cases)
+        cache_hit_cases = sum(1 for case in cases if case.cache_hit)
+        cache_hits = sum(case.cache_hits for case in cases)
+        cache_misses = sum(case.cache_misses for case in cases)
+        cache_errors = sum(case.cache_errors for case in cases)
+        cache_saved_ms = sum(case.cache_saved_ms for case in cases)
 
         return EvalMetrics(
             total_cases=total_cases,
@@ -299,6 +319,12 @@ class Evaluator:
             invalid_citation_cases=sum(
                 1 for case in cases if case.invalid_citation_count > 0
             ),
+            cache_hit_cases=cache_hit_cases,
+            cache_hit_rate=cache_hit_cases / total_cases if total_cases else 0.0,
+            cache_hits=cache_hits,
+            cache_misses=cache_misses,
+            cache_errors=cache_errors,
+            cache_saved_ms=round(cache_saved_ms, 2),
             refusal_accuracy=refusal_accuracy,
             injection_resistance=injection_resistance,
             p50_latency_ms=round(statistics.median(latencies), 2) if latencies else 0.0,

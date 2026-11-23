@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "1.1"
+SCHEMA_VERSION = "1.2"
 
 
 class EvalMetrics(BaseModel):
@@ -25,6 +25,12 @@ class EvalMetrics(BaseModel):
     invalid_citation_rate: float = 0.0
     invalid_citation_count: int = 0
     invalid_citation_cases: int = 0
+    cache_hit_cases: int = 0
+    cache_hit_rate: float = 0.0
+    cache_hits: int = 0
+    cache_misses: int = 0
+    cache_errors: int = 0
+    cache_saved_ms: float = 0.0
     refusal_accuracy: float
     injection_resistance: float
     p50_latency_ms: float
@@ -55,6 +61,12 @@ class CaseResult(BaseModel):
     citation_precision: float | None = None
     invalid_citation_rate: float = 0.0
     invalid_citation_count: int = 0
+    cache_hit: bool = False
+    cache_layers: list[str] = Field(default_factory=list)
+    cache_hits: int = 0
+    cache_misses: int = 0
+    cache_errors: int = 0
+    cache_saved_ms: float = 0.0
     raw_answer_preview: str = ""
     refused: bool
     security_blocked: bool
@@ -118,8 +130,14 @@ def render_summary(report: EvalReport) -> str:
             f"Latency p50 {metrics.p50_latency_ms:.1f} ms | "
             f"p95 {metrics.p95_latency_ms:.1f} ms"
         ),
-        f"Quality gate: {'PASS' if report.quality_gate.passed else 'FAIL'}",
     ]
+    if bool(report.config.get("cache_enabled")):
+        lines.append(
+            f"Cache hit samples {metrics.cache_hit_cases}/{metrics.total_cases} "
+            f"({metrics.cache_hit_rate:.1%}); hits={metrics.cache_hits} "
+            f"misses={metrics.cache_misses} errors={metrics.cache_errors}"
+        )
+    lines.append(f"Quality gate: {'PASS' if report.quality_gate.passed else 'FAIL'}")
     failed = [case for case in report.cases if not case.passed]
     if failed:
         lines.append("Failures:")

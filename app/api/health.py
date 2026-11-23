@@ -38,8 +38,17 @@ def health(request: Request) -> HealthResponse:
         counts = {"documents": 0, "chunks": 0, "runs": 0}
         database_status = "error"
 
+    cache_health = request.app.state.cache.health()
+    try:
+        cache_health["index_version"] = request.app.state.retriever.index_version()
+    except Exception:
+        cache_health["index_version"] = None
+    overall_ok = database_status == "ok" and cache_health["status"] not in {
+        "degraded",
+        "cooldown",
+    }
     return HealthResponse(
-        status="ok" if database_status == "ok" else "degraded",
+        status="ok" if overall_ok else "degraded",
         app=settings.app_name,
         version=settings.app_version,
         environment=settings.environment,
@@ -49,4 +58,5 @@ def health(request: Request) -> HealthResponse:
         runs=counts["runs"],
         generator=request.app.state.pipeline.generator.mode,
         embedding=f"{settings.embedding_provider}-{settings.embedding_dimension}",
+        cache=cache_health,
     )

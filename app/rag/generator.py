@@ -121,6 +121,7 @@ class ExtractiveGenerator:
 
     def __init__(self, max_answer_chars: int = 1200) -> None:
         self.max_answer_chars = max_answer_chars
+        self.cache_signature = f"extractive:v1:max_answer_chars={max_answer_chars}"
 
     def generate(self, question: str, items: list[ContextItem]) -> Generation:
         candidates: list[tuple[float, ContextItem, str]] = []
@@ -222,6 +223,10 @@ class OpenAICompatibleGenerator:
         self.timeout_seconds = timeout_seconds
         self.max_answer_chars = max_answer_chars
         self.mode = f"openai:{model}"
+        self.cache_signature = (
+            f"openai:{model}:temperature=0.0:max_tokens=600:"
+            f"max_answer_chars={max_answer_chars}"
+        )
 
     def generate(self, question: str, items: list[ContextItem]) -> Generation:
         messages = build_messages(question, items)
@@ -291,6 +296,10 @@ class FallbackGenerator:
         self.primary = primary
         self.fallback = fallback
         self.mode = f"{primary.mode}+extractive"
+        self.cache_signature = (
+            f"fallback:{getattr(primary, 'cache_signature', primary.mode)}|"
+            f"{getattr(fallback, 'cache_signature', fallback.mode)}"
+        )
 
     def generate(self, question: str, items: list[ContextItem]) -> Generation:
         try:

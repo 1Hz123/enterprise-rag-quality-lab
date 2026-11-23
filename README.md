@@ -40,6 +40,7 @@
 - **反馈闭环**：用户评分可提升或抑制经验；低分经验会被删除。
 - **受控进化**：`POST /api/v1/organization/evolve` 在固定评测集上搜索覆盖率阈值，默认只给建议，显式 `apply=true` 才在当前进程生效。
 - **固定质量门禁**：来源命中率、MRR、关键词覆盖、引用准确率、拒答正确率、注入抵抗率和延迟。
+- **可选 Redis 缓存**：embedding / retrieval / answer 三层精确缓存；默认关闭，短超时 fail-fast、熔断降级、singleflight、SCAN 清理和 `/health.cache` 可观测。
 - **工程化交付**：FastAPI、Pydantic、SQLite、pytest、Ruff、Dockerfile、GitHub Actions、依赖审计。
 - **可审计运行轨迹**：每个回答保存检索结果、智能体轨迹、引用、质量检查和经验使用情况。
 
@@ -77,8 +78,8 @@ uvicorn app.main:app --reload
 ### 方式三：Docker
 
 ```bash
-docker build -t enterprise-rag-quality-lab:1.1.0 .
-docker run --rm -p 8000:8000 enterprise-rag-quality-lab:1.1.0
+docker build -t enterprise-rag-quality-lab:1.2.0 .
+docker run --rm -p 8000:8000 enterprise-rag-quality-lab:1.2.0
 ```
 
 镜像基于 `python:3.11-slim`，使用非 root 用户，暴露 8000，并带 `/health` 健康检查。详见 [Dockerfile](Dockerfile)。
@@ -90,6 +91,100 @@ docker run --rm -p 8000:8000 enterprise-rag-quality-lab:1.1.0
 - 智能组织状态：<http://127.0.0.1:8000/api/v1/organization>
 
 首次启动会自动把 `data/sample_docs/` 下的 7 篇文档写入 `data/rag_lab.db`。重复启动是幂等的；文档内容变化后会重新切块和索引。
+
+## Redis 缓存（可选，默认关闭）
+
+缓存是**显式开启**的能力。`CACHE_ENABLED=false` 时应用不会连接 Redis，所有 API、测试和评测照常运行。
+
+```bash
+# 本地开发 Redis（无持久化）
+docker compose up -d redis
+
+# .env
+CACHE_ENABLED=true
+REDIS_URL=redis://127.0.0.1:6379/0
+CACHE_KEY_PREFIX=raglab
+CACHE_ENV=local
+CACHE_SCOPE=public
+```
+
+配置同时接受 `CACHE_ENABLED` 与 `RAG_LAB_CACHE_ENABLED` 两种写法；完整键见 [.env.example](.env.example)。
+
+### 三层缓存
+
+| 层 | 缓存内容 | 默认 TTL | 命中节省的量化口径 |
+|---|---|---:|---|
+| `embedding` | 文本 + 模型 + 维度 → float32 向量 | 7 天 | 1 次 embedding 调用 + N 个输入 token |
+| `retrieval` | query + top_k + filters + as_of + index_version → chunk id/分数 | 30 分钟（10–60 分钟可调） | 1 次向量检索的近期 P95 耗时 + 1 次向量检索调用 |
+| `answer` | 问题 + 上下文指纹 + prompt + 生成器签名 + as_of → 最终回答 | 15 分钟（5–30 分钟可调） | 1 次 LLM 调用 + 输入/输出 token |
+
+TTL 带 ±10% 随机抖动，避免同一时刻集中过期。空检索结果默认**不缓存**；只有 `NEGATIVE_CACHE_ENABLED=true` 时才使用 `RETRIEVAL_NEGATIVE_TTL`（默认 60 秒）的负缓存，防止索引问题被长期固化。
+
+### Key 与一致性
+
+```text
+{prefix}:{env}:{namespace}:{sha256(canonical_input)}
+```
+
+- 原始 query、文档名、用户文本不会出现在 key 中，只出现 SHA-256 摘要。
+- 规范化输入包含：模型名、维度、prompt 版本、top_k、排序后的 document filters、as_of、采样参数、`CACHE_SCOPE`。
+- retrieval 的 namespace 带 `index_version`（基于文档更新时间、数量、chunk 数和 checksum 的 manifest hash）；重建索引后 key 自然变化，不需要逐个删除。
+- 当前所有文档是全局语料，没有用户级 ACL；如果未来加入租户/ACL，必须把租户或权限指纹放进 `CACHE_SCOPE`，或把授权的 `document_ids` 作为 filters 传入。**不能把用户私有上下文放进全局 key。**
+
+### 可观测与健康检查
+
+每次缓存操作输出结构化字段：
+
+```text
+cache_hit layer=embedding latency_ms=... saved_ms=... saved_input_tokens=... saved_model_calls=...
+cache_miss layer=retrieval latency_ms=...
+cache_error layer=answer error=RedisError consecutive_errors=...
+cache_cooldown_skip layer=retrieval
+```
+
+`GET /health` 返回 `cache` 子系统：`enabled`、`backend`、`status`、`last_error`、`consecutive_errors`、`cooldown_remaining_s`、`metrics`。命中率分母是该层 `hits + misses + errors`；`saved_ms` 使用近期 miss 的 P95，而不是把缓存等待时间算成收益。
+
+### 降级与超时
+
+- 启动 PING 失败只打印 WARN，自动进入无缓存模式，不阻塞启动。
+- Redis socket timeout 默认 **100ms**、connect timeout **500ms**；单次缓存操作总预算约 700ms，慢 Redis 不会把请求拖成长挂起。
+- 连续错误达到阈值后进入 `CACHE_FAIL_OPEN_COOLDOWN`（默认 30 秒）；冷却期内不连接 Redis，直接走原始链路。
+- 任何 Redis 异常都只降级，不向客户端返回 500 或堆栈。
+- 同一 key 的并发 miss 使用进程内 singleflight，并且**拿到锁后 double-check**。锁等待超过 `CACHE_SINGLEFLIGHT_TIMEOUT` 时直接回源，避免堆积。
+- singleflight 只解决单实例惊群；多实例下同样的 cold miss 最多按实例数重复回源，这是明确取舍，不使用分布式锁。
+
+### 清缓存
+
+```bash
+# 清一个 namespace
+python scripts/cache_cli.py clear --namespace embedding
+
+# 只清某个索引版本的 retrieval key
+python scripts/cache_cli.py clear --namespace retrieval --index-version <manifest-hash>
+
+# 清全部
+python scripts/cache_cli.py clear --namespace all
+```
+
+CLI 使用 `SCAN` 游标 + 批量 `UNLINK` 并限速，不使用 `KEYS`。`--dry-run` 只打印前缀。`/health` 的 `cache` 信息可帮助确认当前实例状态。
+
+### 评测
+
+离线评测默认强制无缓存；即使环境里 `CACHE_ENABLED=true`，也需要显式 `--cache` 才开启：
+
+```bash
+# 默认：无缓存，不产生 Redis 写入
+python eval/run_eval.py --no-cache
+
+# 对照实验：显式开启
+python eval/run_eval.py --cache
+```
+
+开启缓存时，报告 `config.cache_enabled=true`，每个 case 带 `cache_hit`/`cache_layers`，聚合结果带 `cache_hit_cases`、`cache_hit_rate`、`cache_hits`、`cache_misses`、`cache_errors`、`cache_saved_ms`。缓存命中的样本单独统计，不把延迟和未命中样本混在一起。
+
+**语义缓存**（同义 query 复用）是可选扩展层：`SEMANTIC_CACHE_ENABLED=false` 默认关闭；当前版本的 exact-cache 链路不会把它混入默认结论。该层尚未接入生产路径，开启只会在启动日志提示 reserved，不会改变答案。
+
+当前回答接口不是 SSE/流式；如果未来引入流式，缓存保存完整文本并在回放时分块，首 token 延迟必须按“真实生成 / 缓存回放”分别打标，不能混入同一个 P95。
 
 ## 智能组织工作流
 
@@ -229,8 +324,8 @@ python eval/run_eval.py `
 | 非法引用率 | 0.0% |
 | 拒答正确率 | 100% |
 | 提示注入抵抗率 | 100% |
-| 延迟 p50 | 7.5 ms |
-| 延迟 p95 | 7.6 ms |
+| 延迟 p50 | 10.8 ms |
+| 延迟 p95 | 11.6 ms |
 
 运行环境：Windows、Python 3.12.5、SQLite、本地 `hashing-384` 向量、`extractive` 生成器，21 道题单次本地运行。延迟只代表本机进程内计算，不代表生产 SLA。
 
@@ -316,8 +411,8 @@ effective_from: 2026-01-01
 
 ## 依赖、License 与漏洞审计
 
-- 运行时 21 个依赖：**0 个已知 CVE**。
-- 全依赖（含 dev/security）62 个依赖：**0 个已知 CVE**。
+- 运行时 25 个依赖：**0 个已知 CVE**。
+- 全依赖（含 dev/security）67 个依赖：**0 个已知 CVE**。
 - Bandit 对 `app/` 的静态扫描：**0 findings**。
 - 依赖 License：无 GPL/AGPL/LGPL；运行时全部为 MIT / Apache-2.0 / BSD / PSF。
 - `certifi` 的 MPL-2.0 只出现在开发依赖中，不进入运行时镜像。
@@ -351,6 +446,7 @@ enterprise-rag-quality-lab/
 │   │   └── orchestrator.py  # 组织运行时
 │   ├── api/                 # health / documents / chat / runs / eval / organization
 │   ├── services/            # 文档与聊天编排
+│   ├── core/                # cache: Redis/Null/fail-open/singleflight
 │   ├── knowledge/           # loader / splitter / embeddings / retriever
 │   ├── rag/                 # pipeline / prompt / generator / query
 │   └── evaluation/          # dataset / evaluator / report
@@ -359,11 +455,13 @@ enterprise-rag-quality-lab/
 │   ├── dataset.jsonl        # 21 道固定问题
 │   ├── run_eval.py
 │   └── results/baseline.json
-├── tests/                   # 53 个 API / RAG / 版本 / 摄入 / 审计 / 智能组织 / 注入测试
+├── tests/                   # 69 个 API / RAG / 版本 / 摄入 / 审计 / 缓存 / 智能组织 / 注入测试
 ├── scripts/ingest.py
+├── scripts/cache_cli.py     # SCAN + UNLINK 清理缓存 namespace
 ├── docs/                    # 架构、实验日志、安全审计
 ├── docs/audit/              # License / CVE / Bandit 原始报告
 ├── Dockerfile               # python:3.11-slim 非 root 镜像
+├── docker-compose.yml       # 本地 redis:7-alpine（无持久化）
 ├── .dockerignore
 └── .github/workflows/ci.yml # lint + test + security + container
 ```
@@ -393,7 +491,7 @@ python -m ruff check .
 python -m pytest --cov=app --cov-report=term-missing
 ```
 
-当前测试：53 项、覆盖率 83%，覆盖 API CRUD、聊天引用、拒答、运行轨迹、切块、检索、21 题评测、制度版本、中文数字、chunk 元数据透传、代码块/GBK/英文分句、原始非法引用审计、fingerprint 判重、版本快照、句子级 quote、经验跨天复用、智能体协作和注入防护。CI 使用锁定依赖在 Python 3.12 上执行 lint、80% 覆盖率门禁、基线回归门禁、依赖漏洞扫描、License 检查、Bandit 和 Docker 健康检查。
+当前测试：69 项、覆盖率 82.4%，覆盖 API CRUD、聊天引用、拒答、运行轨迹、切块、检索、21 题评测、制度版本、中文数字、chunk 元数据透传、代码块/GBK/英文分句、原始非法引用审计、fingerprint 判重、版本快照、句子级 quote、经验跨天复用、Redis 三层缓存（命中/未命中/TTL/序列化/降级/冷却/SCAN 清理/singleflight）、缓存开关对照评测、智能体协作和注入防护。CI 使用锁定依赖在 Python 3.12 上执行 lint、80% 覆盖率门禁、基线回归门禁、依赖漏洞扫描、License 检查、Bandit 和 Docker 健康检查。
 
 > 如果受限 Windows 沙箱阻止 pytest 创建临时目录，可预先创建 `data/pytest-runtime` 并设置 `RAG_LAB_TEST_DIR` 指向它。
 

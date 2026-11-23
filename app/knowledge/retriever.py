@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from collections import Counter
@@ -9,6 +10,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
+from app.core.cache import CacheManager, CacheRequest
 from app.db import Database
 from app.knowledge.embeddings import EmbeddingModel, cosine_similarity, lexical_tokens
 
@@ -57,9 +59,38 @@ class Retriever:
     approximate index. The scoring contract is stable and easy to replace.
     """
 
-    def __init__(self, db: Database, embeddings: EmbeddingModel) -> None:
+    def __init__(
+        self,
+        db: Database,
+        embeddings: EmbeddingModel,
+        *,
+        cache: CacheManager | None = None,
+    ) -> None:
         self.db = db
         self.embeddings = embeddings
+        self.cache = cache
+
+    def index_version(self) -> str:
+        """A cheap manifest hash; any write/reindex changes retrieval keys."""
+
+        row = self.db.fetch_one(
+            """
+            SELECT COUNT(*) AS n,
+                   COALESCE(MAX(updated_at), '') AS latest,
+                   COALESCE(SUM(chunk_count), 0) AS chunks,
+                   COALESCE(MAX(checksum), '') AS checksum
+            FROM documents
+            """
+        )
+        manifest = "|".join(
+            (
+                str(row["n"]) if row else "0",
+                str(row["latest"]) if row else "",
+                str(row["chunks"]) if row else "0",
+                str(row["checksum"]) if row else "",
+            )
+        )
+        return hashlib.sha256(manifest.encode("utf-8")).hexdigest()
 
     def _load_rows(
         self,
@@ -122,6 +153,25 @@ class Retriever:
             scores.append(score)
         return scores
 
+    def _serialize_results(self, chunks: list[RetrievedChunk]) -> bytes:
+        return json.dumps(
+            {
+                "schema_version": 1,
+                "items": [chunk.to_dict() for chunk in chunks],
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    def _deserialize_results(self, payload: bytes) -> list[RetrievedChunk]:
+        data = json.loads(payload.decode("utf-8"))
+        if data.get("schema_version") != 1:
+            raise ValueError("unsupported retrieval cache schema")
+        items = data.get("items")
+        if not isinstance(items, list):
+            raise ValueError("retrieval cache payload has no items")
+        return [RetrievedChunk(**item) for item in items]
+
     def retrieve(
         self,
         query: str,
@@ -136,6 +186,87 @@ class Retriever:
         if top_k < 1:
             raise ValueError("top_k must be positive")
 
+        if self.cache is None or not self.cache.enabled:
+            return self._retrieve_uncached(
+                query,
+                top_k=top_k,
+                document_ids=document_ids,
+                as_of=as_of,
+            )
+
+        index_version = self.index_version()
+        ids = sorted(document_ids) if document_ids else []
+        key = self.cache.key(
+            "retrieval",
+            {
+                "retrieval_schema": 1,
+                "query": query,
+                "top_k": top_k,
+                "document_ids": ids,
+                "as_of": as_of.isoformat() if as_of else None,
+                "index_version": index_version,
+                "embedding_model": self.embeddings.name,
+                "embedding_dimension": self.embeddings.dimension,
+                "scope": self.cache.settings.cache_scope,
+            },
+            index_version=index_version,
+        )
+
+        def load() -> bytes:
+            return self._serialize_results(
+                self._retrieve_uncached(
+                    query,
+                    top_k=top_k,
+                    document_ids=document_ids,
+                    as_of=as_of,
+                )
+            )
+
+        def is_empty(payload: bytes) -> bool:
+            try:
+                return not bool(json.loads(payload.decode("utf-8")).get("items"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return False
+
+        empty_ttl = (
+            self.cache.ttl("retrieval", empty=True)
+            if self.cache.settings.negative_cache_enabled
+            else None
+        )
+        values = self.cache.get_many_or_load(
+            "retrieval",
+            [CacheRequest(key=key, loader=load, saved_vector_calls=1)],
+            ttl=self.cache.ttl("retrieval"),
+            empty_check=is_empty,
+            empty_ttl=empty_ttl,
+        )
+        read = values.get(key)
+        if read is None or read.value is None:
+            return self._retrieve_uncached(
+                query,
+                top_k=top_k,
+                document_ids=document_ids,
+                as_of=as_of,
+            )
+        try:
+            return self._deserialize_results(read.value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            self.cache.delete("retrieval", key)
+            return self._retrieve_uncached(
+                query,
+                top_k=top_k,
+                document_ids=document_ids,
+                as_of=as_of,
+            )
+
+    def _retrieve_uncached(
+        self,
+        query: str,
+        *,
+        top_k: int,
+        document_ids: list[str] | None = None,
+        as_of: date | None = None,
+    ) -> list[RetrievedChunk]:
         rows = self._load_rows(document_ids, as_of)
         if not rows:
             return []

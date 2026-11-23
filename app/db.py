@@ -7,12 +7,20 @@ the synchronous FastAPI worker threads.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+_JOURNAL_MODE_SQL = {
+    "WAL": "PRAGMA journal_mode = WAL",
+    "TRUNCATE": "PRAGMA journal_mode = TRUNCATE",
+}
 
 SCHEMA_VERSION = 4
 
@@ -142,7 +150,9 @@ CREATE INDEX IF NOT EXISTS idx_feedback_run ON feedback(run_id);
 def utc_now() -> str:
     """Return a sortable, timezone-aware UTC timestamp."""
 
-    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+    # Microseconds make updated_at usable as an index-version input even when
+    # a create/reindex happens within the same wall-clock second.
+    return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 class Database:
@@ -150,12 +160,20 @@ class Database:
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
+        self._journal_mode: str | None = None
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self.path, timeout=30)
         connection.row_factory = sqlite3.Row
+        if self._journal_mode in _JOURNAL_MODE_SQL:
+            try:
+                connection.execute(_JOURNAL_MODE_SQL[self._journal_mode])
+            except sqlite3.DatabaseError:
+                # Read-only or restricted filesystems may reject the pragma;
+                # the connection is still usable for reads.
+                logger.debug("could not apply journal_mode=%s", self._journal_mode)
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 5000")
         try:
@@ -171,8 +189,29 @@ class Database:
         """Create or migrate tables and indexes; safe to call repeatedly."""
 
         with self.connect() as connection:
-            connection.execute("PRAGMA journal_mode = WAL")
-            connection.executescript(SCHEMA_SQL)
+            journal_mode = self._select_journal_mode(connection)
+            self._journal_mode = journal_mode.upper() if journal_mode != "delete" else None
+
+            if not self._apply_schema(connection):
+                # Some sandboxed or network filesystems accept WAL but
+                # silently roll back DDL. Retry with TRUNCATE, which only
+                # needs a conventional rollback journal.
+                logger.warning(
+                    "schema apply failed with %s at %s; retrying with TRUNCATE",
+                    journal_mode,
+                    self.path,
+                )
+                connection.rollback()
+                journal_mode = self._set_journal_mode(connection, "TRUNCATE")
+                self._journal_mode = (
+                    "TRUNCATE" if journal_mode == "truncate" else None
+                )
+                if not self._apply_schema(connection):
+                    raise RuntimeError(
+                        f"database initialization failed at {self.path}: "
+                        f"tables were not created (journal_mode={journal_mode})"
+                    )
+
             self._migrate_document_columns(connection)
             self._migrate_experience_columns(connection)
             connection.execute(
@@ -189,6 +228,48 @@ class Database:
                 """
             )
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            logger.info(
+                "database ready: path=%s journal_mode=%s",
+                self.path,
+                journal_mode,
+            )
+
+    @classmethod
+    def _apply_schema(cls, connection: sqlite3.Connection) -> bool:
+        """Apply SCHEMA_SQL and report whether the core tables now exist."""
+
+        try:
+            connection.executescript(SCHEMA_SQL)
+        except sqlite3.OperationalError:
+            logger.debug("schema apply attempt failed", exc_info=True)
+            return False
+        return cls._schema_present(connection)
+
+    @classmethod
+    def _select_journal_mode(cls, connection: sqlite3.Connection) -> str:
+        """Prefer WAL, falling back to TRUNCATE when the filesystem rejects it."""
+
+        for mode in ("WAL", "TRUNCATE"):
+            current = cls._set_journal_mode(connection, mode)
+            if current == mode.lower():
+                return current
+        return "delete"
+
+    @staticmethod
+    def _set_journal_mode(connection: sqlite3.Connection, mode: str) -> str:
+        try:
+            row = connection.execute(_JOURNAL_MODE_SQL[mode]).fetchone()
+        except sqlite3.DatabaseError:
+            return "delete"
+        return str(row[0]).lower() if row else "delete"
+
+    @staticmethod
+    def _schema_present(connection: sqlite3.Connection) -> bool:
+        expected = {"documents", "chunks", "runs", "experiences", "feedback"}
+        rows = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+        return expected.issubset({row["name"] for row in rows})
 
     @staticmethod
     def _migrate_document_columns(connection: sqlite3.Connection) -> None:

@@ -250,6 +250,7 @@ class HealthResponse(BaseModel):
     runs: int
     generator: str
     embedding: str
+    cache: dict[str, Any] = Field(default_factory=dict)
 
 
 class EvalRunRequest(StrictModel):

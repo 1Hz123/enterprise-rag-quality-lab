@@ -10,10 +10,16 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _cache_env(name: str) -> AliasChoices:
+    """Accept both the documented exact key and the project's prefixed key."""
+
+    return AliasChoices(name, f"RAG_LAB_{name}")
 
 
 class Settings(BaseSettings):
@@ -25,10 +31,11 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        populate_by_name=True,
     )
 
     app_name: str = "Enterprise RAG Quality Lab"
-    app_version: str = "1.1.0"
+    app_version: str = "1.2.0"
     environment: Literal["development", "test", "production"] = "development"
     debug: bool = False
     log_level: str = "INFO"
@@ -60,6 +67,123 @@ class Settings(BaseSettings):
     max_answer_chars: int = Field(default=1200, ge=100, le=10000)
     experience_reuse_enabled: bool = True
     experience_min_quality: float = Field(default=0.75, ge=0.0, le=1.0)
+
+    # Cache is opt-in: false must work with no Redis available.
+    cache_enabled: bool = Field(
+        default=False,
+        validation_alias=_cache_env("CACHE_ENABLED"),
+    )
+    redis_url: str = Field(
+        default="redis://127.0.0.1:6379/0",
+        validation_alias=_cache_env("REDIS_URL"),
+    )
+    cache_key_prefix: str = Field(
+        default="raglab",
+        min_length=1,
+        max_length=80,
+        validation_alias=_cache_env("CACHE_KEY_PREFIX"),
+    )
+    cache_env: str = Field(
+        default="local",
+        min_length=1,
+        max_length=40,
+        validation_alias=_cache_env("CACHE_ENV"),
+    )
+    # Current corpus is global. If ACL/tenant filtering is added, set a
+    # per-deployment/per-request scope so private results never share keys.
+    cache_scope: str = Field(
+        default="public",
+        min_length=1,
+        max_length=120,
+        validation_alias=_cache_env("CACHE_SCOPE"),
+    )
+    embedding_ttl: int = Field(
+        default=604800,
+        ge=3600,
+        le=2592000,
+        validation_alias=_cache_env("EMBEDDING_TTL"),
+    )
+    retrieval_ttl: int = Field(
+        default=1800,
+        ge=60,
+        le=7200,
+        validation_alias=_cache_env("RETRIEVAL_TTL"),
+    )
+    answer_ttl: int = Field(
+        default=900,
+        ge=60,
+        le=7200,
+        validation_alias=_cache_env("ANSWER_TTL"),
+    )
+    cache_ttl_jitter: float = Field(
+        default=0.10,
+        ge=0.0,
+        le=0.50,
+        validation_alias=_cache_env("CACHE_TTL_JITTER"),
+    )
+    redis_connect_timeout: float = Field(
+        default=0.50,
+        gt=0.0,
+        le=1.0,
+        validation_alias=_cache_env("REDIS_CONNECT_TIMEOUT"),
+    )
+    redis_socket_timeout: float = Field(
+        default=0.10,
+        gt=0.0,
+        le=1.0,
+        validation_alias=_cache_env("REDIS_SOCKET_TIMEOUT"),
+    )
+    redis_max_connections: int = Field(
+        default=20,
+        ge=1,
+        le=200,
+        validation_alias=_cache_env("REDIS_MAX_CONNECTIONS"),
+    )
+    redis_pool_wait_timeout: float = Field(
+        default=0.10,
+        gt=0.0,
+        le=1.0,
+        validation_alias=_cache_env("REDIS_POOL_WAIT_TIMEOUT"),
+    )
+    redis_health_check_interval: int = Field(
+        default=30,
+        ge=0,
+        le=300,
+        validation_alias=_cache_env("REDIS_HEALTH_CHECK_INTERVAL"),
+    )
+    cache_fail_open_cooldown: float = Field(
+        default=30.0,
+        ge=1.0,
+        le=600.0,
+        validation_alias=_cache_env("CACHE_FAIL_OPEN_COOLDOWN"),
+    )
+    cache_error_threshold: int = Field(
+        default=3,
+        ge=1,
+        le=20,
+        validation_alias=_cache_env("CACHE_ERROR_THRESHOLD"),
+    )
+    cache_singleflight_timeout: float = Field(
+        default=1.0,
+        ge=0.05,
+        le=10.0,
+        validation_alias=_cache_env("CACHE_SINGLEFLIGHT_TIMEOUT"),
+    )
+    negative_cache_enabled: bool = Field(
+        default=False,
+        validation_alias=_cache_env("NEGATIVE_CACHE_ENABLED"),
+    )
+    retrieval_negative_ttl: int = Field(
+        default=60,
+        ge=5,
+        le=600,
+        validation_alias=_cache_env("RETRIEVAL_NEGATIVE_TTL"),
+    )
+    # Reserved optional layer. It is never mixed into exact-cache metrics.
+    semantic_cache_enabled: bool = Field(
+        default=False,
+        validation_alias=_cache_env("SEMANTIC_CACHE_ENABLED"),
+    )
 
     @model_validator(mode="after")
     def _validate_ranges(self) -> Settings:

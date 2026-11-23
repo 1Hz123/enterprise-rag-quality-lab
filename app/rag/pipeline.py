@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import time
-from dataclasses import dataclass, field
+from contextlib import nullcontext
+from dataclasses import asdict, dataclass, field
 from datetime import date
 from typing import Any
 
 from app.config import Settings
+from app.core.cache import CacheManager, CacheRequest
 from app.knowledge.embeddings import lexical_tokens
 from app.knowledge.retriever import RetrievedChunk, Retriever
+from app.knowledge.splitter import estimate_tokens
 from app.rag.generator import Generation, Generator
 from app.rag.prompt import (
     INJECTION_ANSWER,
@@ -67,10 +72,13 @@ class RAGPipeline:
         retriever: Retriever,
         generator: Generator,
         settings: Settings,
+        *,
+        cache: CacheManager | None = None,
     ) -> None:
         self.retriever = retriever
         self.generator = generator
         self.settings = settings
+        self.cache = cache
 
     def _prepare_question(self, question: str) -> str:
         normalized = normalize_query(question.strip())
@@ -107,6 +115,24 @@ class RAGPipeline:
         )
 
     def answer(
+        self,
+        question: str,
+        *,
+        top_k: int | None = None,
+        document_ids: list[str] | None = None,
+        as_of: date | None = None,
+    ) -> RagResult:
+        scope = self.cache.request_scope() if self.cache else nullcontext()
+        with scope:
+            result = self._answer_impl(
+                question,
+                top_k=top_k,
+                document_ids=document_ids,
+                as_of=as_of,
+            )
+            return self._attach_cache_metrics(result)
+
+    def _answer_impl(
         self,
         question: str,
         *,
@@ -151,6 +177,24 @@ class RAGPipeline:
         evidence, avoiding a second retrieval pass.
         """
 
+        scope = self.cache.request_scope() if self.cache else nullcontext()
+        with scope:
+            result = self._answer_from_retrieved_impl(
+                question,
+                retrieved,
+                as_of=as_of,
+                started=started,
+            )
+            return self._attach_cache_metrics(result)
+
+    def _answer_from_retrieved_impl(
+        self,
+        question: str,
+        retrieved: list[RetrievedChunk],
+        *,
+        as_of: date | None = None,
+        started: float | None = None,
+    ) -> RagResult:
         started = started or time.perf_counter()
         prepared = self._prepare_question(question)
         resolved_as_of = as_of or date.today()
@@ -205,7 +249,73 @@ class RAGPipeline:
                 security_blocked=True,
             )
 
-        generation: Generation = self.generator.generate(prepared, items)
+        if self.cache is not None and self.cache.enabled:
+            cache_key = self._answer_cache_key(prepared, items, resolved_as_of)
+            saved_input_tokens = sum(estimate_tokens(item.text) for item in items)
+
+            def load() -> bytes:
+                generated = self._generate_from_items(
+                    prepared,
+                    items,
+                    retrieved,
+                    resolved_as_of,
+                    started,
+                    base_metrics,
+                )
+                return json.dumps(
+                    self._serialize_answer(generated),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+
+            values = self.cache.get_many_or_load(
+                "answer",
+                [
+                    CacheRequest(
+                        key=cache_key,
+                        loader=load,
+                        saved_input_tokens=saved_input_tokens,
+                        saved_model_calls=1,
+                    )
+                ],
+                ttl=self.cache.ttl("answer"),
+            )
+            read = values.get(cache_key)
+            if read is not None and read.value is not None:
+                try:
+                    cached = self._deserialize_answer(
+                        read.value,
+                        as_of=resolved_as_of,
+                        started=started,
+                    )
+                    if read.hit:
+                        self.cache.record_saved(
+                            "answer",
+                            saved_output_tokens=estimate_tokens(cached.answer),
+                        )
+                    return cached
+                except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+                    self.cache.delete("answer", cache_key)
+
+        return self._generate_from_items(
+            prepared,
+            items,
+            retrieved,
+            resolved_as_of,
+            started,
+            base_metrics,
+        )
+
+    def _generate_from_items(
+        self,
+        question: str,
+        items: list[Any],
+        retrieved: list[RetrievedChunk],
+        as_of: date,
+        started: float,
+        base_metrics: dict[str, Any],
+    ) -> RagResult:
+        generation: Generation = self.generator.generate(question, items)
         (
             text,
             used_indices,
@@ -252,7 +362,7 @@ class RAGPipeline:
             answer=text,
             refused=generation.refused,
             security_blocked=False,
-            as_of=resolved_as_of,
+            as_of=as_of,
             citations=citations,
             retrieved=retrieved,
             latency_ms=round((time.perf_counter() - started) * 1000, 2),
@@ -264,6 +374,109 @@ class RAGPipeline:
             invalid_citation_rate=invalid_rate,
             fallback_used=generation.fallback_used,
         )
+
+    def _answer_cache_key(
+        self,
+        question: str,
+        items: list[Any],
+        as_of: date,
+    ) -> str:
+        assert self.cache is not None
+        context = [
+            (
+                item.index,
+                item.chunk.chunk_id,
+                item.chunk.score,
+                hashlib.sha256(item.text.encode("utf-8")).hexdigest(),
+            )
+            for item in items
+        ]
+        index_version = getattr(self.retriever, "index_version", lambda: None)()
+        return self.cache.key(
+            "answer",
+            {
+                "answer_schema": 1,
+                "question": question,
+                "context": context,
+                "index_version": index_version,
+                "prompt_version": PROMPT_VERSION,
+                "generator": self._generator_signature(),
+                "as_of": as_of.isoformat(),
+            },
+        )
+
+    def _generator_signature(self) -> str:
+        return str(getattr(self.generator, "cache_signature", self.generator.mode))
+
+    @staticmethod
+    def _serialize_answer(result: RagResult) -> dict[str, Any]:
+        metrics = {
+            key: value
+            for key, value in result.metrics.items()
+            if key not in {"cache", "cache_hit", "cache_layers"}
+        }
+        return {
+            "schema_version": 1,
+            "answer": result.answer,
+            "raw_answer": result.raw_answer,
+            "refused": result.refused,
+            "security_blocked": result.security_blocked,
+            "citations": [asdict(citation) for citation in result.citations],
+            "retrieved": [chunk.to_dict() for chunk in result.retrieved],
+            "prompt_version": result.prompt_version,
+            "mode": result.mode,
+            "metrics": metrics,
+            "invalid_citation_count": result.invalid_citation_count,
+            "invalid_citation_rate": result.invalid_citation_rate,
+            "fallback_used": result.fallback_used,
+        }
+
+    @staticmethod
+    def _deserialize_answer(
+        payload: bytes,
+        *,
+        as_of: date,
+        started: float,
+    ) -> RagResult:
+        data = json.loads(payload.decode("utf-8"))
+        if data.get("schema_version") != 1:
+            raise ValueError("unsupported answer cache schema")
+        citations = data.get("citations")
+        retrieved = data.get("retrieved")
+        metrics = data.get("metrics")
+        if not isinstance(citations, list) or not isinstance(retrieved, list):
+            raise ValueError("answer cache payload is incomplete")
+        if not isinstance(metrics, dict):
+            raise ValueError("answer cache metrics must be an object")
+        return RagResult(
+            answer=str(data["answer"]),
+            refused=bool(data["refused"]),
+            security_blocked=bool(data["security_blocked"]),
+            as_of=as_of,
+            citations=[Citation(**citation) for citation in citations],
+            retrieved=[RetrievedChunk(**chunk) for chunk in retrieved],
+            latency_ms=round((time.perf_counter() - started) * 1000, 2),
+            prompt_version=str(data["prompt_version"]),
+            mode=str(data["mode"]),
+            metrics=metrics,
+            raw_answer=str(data.get("raw_answer", "")),
+            invalid_citation_count=int(data.get("invalid_citation_count", 0)),
+            invalid_citation_rate=float(data.get("invalid_citation_rate", 0.0)),
+            fallback_used=bool(data.get("fallback_used", False)),
+        )
+
+    def _attach_cache_metrics(self, result: RagResult) -> RagResult:
+        if self.cache is None:
+            return result
+        metrics = self.cache.request_metrics()
+        result.metrics["cache"] = metrics
+        result.metrics["cache_hit"] = metrics["hit"]
+        result.metrics["cache_layers"] = [
+            layer
+            for layer, layer_metrics in metrics["layers"].items()
+            if layer_metrics["hits"] > 0
+        ]
+        return result
 
     def _blocked_result(self, question: str, as_of: date, started: float) -> RagResult:
         return RagResult(

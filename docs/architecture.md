@@ -359,7 +359,39 @@ Pipeline 会：
 
 CI 还以 `eval/results/baseline.json` 为参照，要求 pass/hit/citation 不超过 2 个百分点的回退。门禁是回归保护线，不是质量目标。
 
-## 10. 可扩展点
+## 10. Redis 缓存层
+
+缓存是可选基础设施，不是检索/生成语义的一部分。`CACHE_ENABLED=false` 时使用 `NullCacheBackend`，不连接 Redis。
+
+### 运行时模型
+
+- `app/core/cache.py` 是唯一 import redis 的模块；调用方只依赖 `CacheManager`。
+- Redis 使用 `redis.asyncio`、一个应用级 `ConnectionPool` 和一个专用后台事件循环。同步 RAG 核心通过线程安全 facade 调用，不创建同步客户端、不在函数内新建连接。
+- 三层：embedding（float32 二进制，带维度/dtype/归一化头）、retrieval（JSON chunk 列表 + index manifest）、answer（JSON 最终结果）。
+- 多命令写入走 `pipeline(transaction=True)`；批量 embedding 回写用 `set_many`。
+- `delete_prefix` 使用 `SCAN` 游标 + 批量 `UNLINK`，不使用 `KEYS`。
+
+### 一致性与隔离
+
+- key：`{prefix}:{env}:{namespace}:{sha256(canonical_input)}`；原始 query/文件名不落 key。
+- retrieval namespace 带索引 manifest hash；重建索引/更新时间变化后旧 key 不再命中。
+- 当前没有用户级 ACL；`CACHE_SCOPE=public`。未来接入租户/ACL 时必须把权限指纹或授权文档集合纳入 key，禁止把私有上下文放进全局 key。
+- TTL：embedding 7 天、retrieval 30 分钟、answer 15 分钟，带 ±10% 抖动；空 retrieval 默认不缓存。
+
+### 降级与并发
+
+- 启动 PING 失败 WARN + 无缓存；任何 Redis 异常 fail-open。
+- 连接 500ms、socket 100ms、操作预算约 700ms；连续错误进入 cooldown，冷却期不再拨 Redis。
+- 进程内 singleflight 在锁后 double-check，锁等待超时直接回源；多实例 cold miss 上界为实例数，不使用分布式锁。
+
+### 评测与可观测
+
+- 离线评测默认 `--no-cache`；显式 `--cache` 才开启，报告记录 `cache_hit`、命中的层和分层命中数。
+- 日志字段：`layer`、`latency_ms`、`saved_ms`（近期 miss 的 P95）、`saved_input_tokens`、`saved_output_tokens`、`saved_model_calls`、`saved_vector_calls`。
+- `/health.cache` 返回连接状态、最近错误、冷却剩余时间、命中/未命中/错误计数和当前 index version。
+- 语义缓存是保留开关，默认关闭；不进入 exact-cache 链路，也不混入默认评测结论。
+
+## 11. 可扩展点
 
 ### 替换 embedding
 
@@ -387,7 +419,7 @@ class EmbeddingModel(Protocol):
 
 在 `_load_rows()` 的 SQL 中加入 `tenant_id` / ACL 条件，并在 `ChatRequest` 中传递可信身份；不要相信客户端自报的 tenant。当前没有身份层，属于生产阻塞项。
 
-## 11. 已知风险
+## 12. 已知风险
 
 | 风险 | 影响 | 缓解 |
 |---|---|---|
@@ -399,5 +431,8 @@ class EmbeddingModel(Protocol):
 | 经验精确匹配 | 相似问法无法复用 | 语义近邻召回 + 更细粒度失效校验 |
 | 进化过拟合 | 同集调参虚高 | 留出集、人工审批、只读建议 |
 | 多时点经验未复用 | 复杂问题仍需重算 | 存储逐引用审计日期后再开放复用 |
-| 无认证/ACL | 数据越权 | 上线前必须补齐 |
+| 无认证/ACL | 数据越权 | 上线前必须补齐；启用缓存前先设置 cache scope |
 | SQLite 写竞争 | 高并发写入受限 | 只读副本 / PostgreSQL |
+| 缓存 singleflight 仅进程内 | 多实例 cold miss 重复回源 | 可接受上界=实例数；不引入分布式锁 |
+| 语义缓存未接入 | 同义问法不能复用 | 保持默认关闭，单独立项评测 |
+| Redis 故障/慢响应 | 请求变慢或缓存失效 | 短 socket、fail-open、冷却降级；未命中走原链路 |

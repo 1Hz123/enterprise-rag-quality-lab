@@ -6,7 +6,7 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-10-26（E0–E2）；2026-10-28（E3）；2026-11-14（E4）；2026-11-16（E5）；2026-11-18（E6） |
+| 日期 | 2026-10-26（E0–E2）；2026-10-28（E3）；2026-11-14（E4）；2026-11-16（E5）；2026-11-18（E6）；2026-11-23（E7） |
 | OS | Windows |
 | Python | 3.12.5 |
 | 语料 | `data/sample_docs/` 7 篇（含 2025 历史版本），约 15 KB |
@@ -203,11 +203,40 @@
 
 **结论**：非法引用不再被静默清洗，fingerprint 能区分版本窗口，版本快照和句子级 quote 可审计。**没有完成** 100+ 题库/30% holdout、旧 `as_of` 的版本化 chunk 检索和完整生产鉴权；这些仍在下一阶段。
 
+## E7：可开关、可降级的 Redis 三层缓存
+
+**假设**：embedding、retrieval、answer 是三类高复用对象；缓存必须默认关闭、失败快速降级，并且不能改变检索排序和评测结论。
+
+**改动**：
+
+1. `app/core/cache.py` 提供 `CacheBackend` / `RedisCacheBackend` / `NullCacheBackend` / `CacheManager`；只有该模块 import redis。
+2. `redis.asyncio` + 应用级连接池 + 专用后台事件循环；同步 RAG 核心通过线程安全 facade 调用，不使用同步 redis 客户端阻塞事件循环。
+3. 三层精确缓存：float32 embedding、带 index manifest 的 retrieval、带上下文/生成器签名的 answer。
+4. SHA-256 key、TTL 抖动、负缓存开关、ACL scope 说明、SCAN+UNLINK 清理 CLI。
+5. 100ms socket timeout、约 700ms 操作预算、连续错误熔断与冷却；单实例 singleflight + double-check + 锁超时。
+6. `/health.cache`、`cache_hit/miss/error/cooldown` 结构化日志，以及保存的耗时/输入输出 token/模型调用/向量调用计数。
+7. 评测默认 `--no-cache`，`--cache` 显式开启；报告带 `cache_hit` 与 cache 聚合，语义缓存保持默认关闭。
+
+**验收结果**：
+
+| 指标 | 结果 |
+|---|---:|
+| 测试 | 69 passed |
+| 覆盖率 | 82.4% |
+| 21 题基线（无缓存） | 21/21 |
+| 非法引用率 | 0.0% |
+| 质量门禁 | PASS |
+| 延迟（无缓存） | p50 10.8 ms，p95 11.6 ms |
+| Redis 不可用/慢响应 | API 200，进入 cooldown，无 500 |
+| Bandit | 0 findings |
+
+**结论**：缓存默认关闭时与旧链路等价；开启后命中层有明确收益口径，失败只降级。语义缓存仍未接入，多实例 cold miss 上界为实例数，旧 `as_of` 版本化 chunk 检索仍未完成。
+
 ## 测试验证
 
 ```text
-53 passed
-coverage: 83%
+69 passed
+coverage: 82.4%
 ```
 
 覆盖内容包括：
@@ -221,6 +250,7 @@ coverage: 83%
 - 智能体团队状态、多时点对比、经验复用、反馈提升/抑制、受控进化和中文数字查询。
 - chunk 元数据/heading path、fenced code block、frontmatter 横线、GBK、英文分句、混合中英 token 和维度不匹配。
 - 原始非法引用率/门禁、fingerprint 判重、同正文不同生效期、版本快照、句子级 quote、经验跨天复用。
+- Redis 缓存的 hit/miss、TTL、float32 往返、索引版本失效、SCAN 清理、负缓存、singleflight、慢连接 fail-fast、熔断冷却和 Redis 不可用 API 降级。
 
 ## 失败样例与观察
 
@@ -237,13 +267,13 @@ coverage: 83%
 
 | 编号 | 假设 | 设计 | 主要指标 |
 |---|---|---|---|
-| E7 | 同义改写会显著拉低哈希召回 | 为 21 题各写 3 个改写，不新增语料 | hit@5、拒答率 |
-| E8 | 干扰文档会暴露引用精确率问题 | 每篇主题加入 3 篇相似但错误的旧版本文档 | citation precision、pass rate |
-| E9 | 句子级归因比“文档级引用”更严格 | 标注支持句，加入 NLI/LLM judge | attribution accuracy |
-| E10 | 训练好的 embedding 优于哈希向量 | 同一切块和生成器，仅替换 embedding | MRR、hit@5、延迟 |
-| E11 | 抽取式生成器是当前上限 | 接入 OpenAI 兼容生成器，使用相同上下文 | 人工评分、faithfulness |
-| E12 | 规则注入防护存在误伤 | 构造 20 条“讨论注入而非执行注入”的问题 | false positive rate |
-| E13 | 权限过滤缺失是生产阻塞 | 增加文档 ACL 和租户隔离测试 | 越权率 |
+| E8 | 同义改写会显著拉低哈希召回 | 为 21 题各写 3 个改写，不新增语料 | hit@5、拒答率 |
+| E9 | 干扰文档会暴露引用精确率问题 | 每篇主题加入 3 篇相似但错误的旧版本文档 | citation precision、pass rate |
+| E10 | 句子级归因比“文档级引用”更严格 | 标注支持句，加入 NLI/LLM judge | attribution accuracy |
+| E11 | 训练好的 embedding 优于哈希向量 | 同一切块和生成器，仅替换 embedding | MRR、hit@5、延迟 |
+| E12 | 抽取式生成器是当前上限 | 接入 OpenAI 兼容生成器，使用相同上下文 | 人工评分、faithfulness |
+| E13 | 规则注入防护存在误伤 | 构造 20 条“讨论注入而非执行注入”的问题 | false positive rate |
+| E14 | 权限过滤缺失是生产阻塞 | 增加文档 ACL 和租户隔离测试 | 越权率 |
 
 ## 可复现命令
 

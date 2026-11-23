@@ -14,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.config import build_settings
+from app.core.cache import build_cache
 from app.db import Database
 from app.evaluation.dataset import load_dataset
 from app.evaluation.evaluator import Evaluator
@@ -71,6 +72,17 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Previous report to compare against.",
     )
+    cache_group = parser.add_mutually_exclusive_group()
+    cache_group.add_argument(
+        "--cache",
+        action="store_true",
+        help="Explicitly enable Redis cache for this offline evaluation (default: disabled).",
+    )
+    cache_group.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Force cache off, overriding CACHE_ENABLED (also the default).",
+    )
     parser.add_argument("--json", action="store_true", help="Print the full report as JSON.")
     parser.add_argument("--fail-under-pass-rate", type=float, default=None)
     parser.add_argument("--fail-under-hit-rate", type=float, default=None)
@@ -91,20 +103,28 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
+    use_cache = bool(args.cache and not args.no_cache)
     settings = build_settings(
         database_path=args.database,
         sample_docs_dir=PROJECT_ROOT / "data" / "sample_docs",
         eval_dataset_path=args.dataset,
         eval_results_dir=PROJECT_ROOT / "eval" / "results",
+        cache_enabled=use_cache,
     )
     settings.database_path.parent.mkdir(parents=True, exist_ok=True)
 
     database = Database(settings.database_path)
     database.initialize()
-    embeddings = build_embeddings(settings.embedding_provider, settings.embedding_dimension)
-    retriever = Retriever(database, embeddings)
+    cache_manager = build_cache(settings)
+    cache_manager.start()
+    embeddings = build_embeddings(
+        settings.embedding_provider,
+        settings.embedding_dimension,
+        cache=cache_manager,
+    )
+    retriever = Retriever(database, embeddings, cache=cache_manager)
     generator = build_generator(settings)
-    pipeline = RAGPipeline(retriever, generator, settings)
+    pipeline = RAGPipeline(retriever, generator, settings, cache=cache_manager)
     document_service = DocumentService(database, settings, embeddings)
 
     if not args.no_seed:
@@ -182,6 +202,8 @@ def main() -> int:
         failed = [name for name, passed in report.quality_gate.checks.items() if not passed]
         logger.error("quality gate failed: %s", ", ".join(failed))
         exit_code = 1
+    logger.info("cache during eval: %s", cache_manager.health(ping=False)["status"])
+    cache_manager.close()
     return exit_code
 
 
