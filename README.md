@@ -100,8 +100,8 @@ uvicorn app.main:app --reload
 ### 方式三：Docker
 
 ```bash
-docker build -t enterprise-rag-quality-lab:1.3.0 .
-docker run --rm -p 8000:8000 enterprise-rag-quality-lab:1.3.0
+docker build -t enterprise-rag-quality-lab:1.3.1 .
+docker run --rm -p 8000:8000 enterprise-rag-quality-lab:1.3.1
 ```
 
 镜像基于 `python:3.11-slim`，使用非 root 用户，暴露 8000，并带 `/health` 健康检查。详见 [Dockerfile](Dockerfile)。
@@ -127,12 +127,18 @@ docker run --rm -p 8000:8000 enterprise-rag-quality-lab:1.3.0
 
 PDF 细节：
 
-- 单文件默认上限 `RAG_LAB_MAX_DOCUMENT_BYTES=2000000`；较大的 PDF 请调高该值（配置允许到 20MB）；
+- 文本单文件默认上限 `RAG_LAB_MAX_DOCUMENT_BYTES=2000000`；
+- PDF 单独使用 `RAG_LAB_MAX_PDF_BYTES`，默认 `20000000`（20MB），避免大 PDF 被文本上限误拒；
 - 页数上限 `RAG_LAB_MAX_PDF_PAGES=500`；
 - 提取后的文档 `content_type=application/pdf`，metadata 记录 `page_count` 和 `pdf_title`；
 - PDF 的每一页文本按空行合并后进入现有切块/embedding/引用链路；
 - 当前没有逐页 chunk 的页码字段，引用定位到文档与 chunk；逐页引用需要后续把 `page` 写进 chunk metadata；
-- 扫描件请先 OCR 成文本或可选中 PDF，再入库。
+- 扫描件请先 OCR 成文本或可选中 PDF，再入库；
+- 用户 PDF 建议放 `data/user_docs/`，不要放 `data/sample_docs/`：后者用于固定基线和 21 题评测，混入个人大文件会改变语料与延迟。
+
+```bash
+python scripts/ingest.py --source data/user_docs
+```
 
 上传入口：
 
@@ -373,8 +379,8 @@ python eval/run_eval.py `
 | 非法引用率 | 0.0% |
 | 拒答正确率 | 100% |
 | 提示注入抵抗率 | 100% |
-| 延迟 p50 | 7.4 ms |
-| 延迟 p95 | 8.1 ms |
+| 延迟 p50 | 12.8 ms |
+| 延迟 p95 | 13.8 ms |
 
 运行环境：Windows、Python 3.12.5、SQLite、本地 `hashing-384` 向量、`extractive` 生成器，21 道题单次本地运行。延迟只代表本机进程内计算，不代表生产 SLA。
 
@@ -531,7 +537,8 @@ enterprise-rag-quality-lab/
 | `RAG_LAB_GENERATOR_PROVIDER` | `extractive` | `extractive` 或 `openai` |
 | `RAG_LAB_EXPERIENCE_REUSE_ENABLED` | `true` | 是否允许经验复用 |
 | `RAG_LAB_EXPERIENCE_MIN_QUALITY` | `0.75` | 进入经验库的最低质量分 |
-| `RAG_LAB_MAX_DOCUMENT_BYTES` | `2000000` | 单文件字节上限 |
+| `RAG_LAB_MAX_DOCUMENT_BYTES` | `2000000` | 文本单文件字节上限 |
+| `RAG_LAB_MAX_PDF_BYTES` | `20000000` | PDF 单文件字节上限 |
 | `RAG_LAB_MAX_PDF_PAGES` | `500` | 文本型 PDF 页数上限 |
 | `RAG_LAB_OPENAI_API_KEY` | 空 | 仅 `openai` 模式需要 |
 
@@ -542,7 +549,7 @@ python -m ruff check .
 python -m pytest --cov=app --cov-report=term-missing
 ```
 
-当前测试：73 项、覆盖率 82.0%，覆盖 API CRUD、聊天引用、拒答、运行轨迹、切块、检索、21 题评测、制度版本、中文数字、chunk 元数据透传、代码块/GBK/英文分句、PDF 文本提取与上传、原始非法引用审计、fingerprint 判重、版本快照、句子级 quote、经验跨天复用、Redis 三层缓存（命中/未命中/TTL/序列化/降级/冷却/SCAN 清理/singleflight）、缓存开关对照评测、宽泛假期澄清、答案相关性审计、智能体协作和注入防护。CI 使用锁定依赖在 Python 3.12 上执行 lint、80% 覆盖率门禁、基线回归门禁、依赖漏洞扫描、License 检查、Bandit 和 Docker 健康检查。
+当前测试：73 项、覆盖率 81.7%，覆盖 API CRUD、聊天引用、拒答、运行轨迹、切块、检索、21 题评测、制度版本、中文数字、chunk 元数据透传、代码块/GBK/英文分句、PDF 文本提取与上传、多要素 PDF 问答、原始非法引用审计、fingerprint 判重、版本快照、句子级 quote、经验跨天复用、Redis 三层缓存（命中/未命中/TTL/序列化/降级/冷却/SCAN 清理/singleflight）、缓存开关对照评测、宽泛假期澄清、答案相关性审计、智能体协作和注入防护。CI 使用锁定依赖在 Python 3.12 上执行 lint、80% 覆盖率门禁、基线回归门禁、依赖漏洞扫描、License 检查、Bandit 和 Docker 健康检查。
 
 > 如果受限 Windows 沙箱阻止 pytest 创建临时目录，可预先创建 `data/pytest-runtime` 并设置 `RAG_LAB_TEST_DIR` 指向它。
 

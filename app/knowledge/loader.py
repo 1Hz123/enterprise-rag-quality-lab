@@ -273,6 +273,50 @@ def _decode(data: bytes) -> tuple[str, str]:
     raise DocumentLoadError("document must be UTF-8 or GB18030 encoded text")
 
 
+_CJK_CHAR_RE = re.compile(r"[\u3400-\u9fff]")
+
+
+def _join_pdf_lines(text: str) -> str:
+    """Rejoin PDF hard-wrapped lines into paragraphs before sentence splitting.
+
+    PDF extractors often break a Chinese sentence at an arbitrary column. Keeping
+    those newlines makes the extractive generator select fragments such as
+    “人，跟踪了 4.74 年” instead of the full study sentence.
+    """
+
+    paragraphs: list[str] = []
+    buffer = ""
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            if buffer:
+                paragraphs.append(buffer)
+                buffer = ""
+            paragraphs.append("")
+            continue
+
+        starts_block = line.startswith(("#", "- ", "•", "* ", "|"))
+        if starts_block:
+            if buffer:
+                paragraphs.append(buffer)
+                buffer = ""
+            buffer = line
+            continue
+
+        if not buffer:
+            buffer = line
+            continue
+
+        separator = "" if (
+            _CJK_CHAR_RE.search(buffer[-1]) and _CJK_CHAR_RE.search(line[0])
+        ) else " "
+        buffer = f"{buffer}{separator}{line}"
+
+    if buffer:
+        paragraphs.append(buffer)
+    return "\n".join(paragraphs)
+
+
 def _extract_pdf_text(
     data: bytes,
     *,
@@ -336,7 +380,7 @@ def _pdf_loaded_document(
     origin: str,
 ) -> LoadedDocument:
     content, page_count, pdf_title = _extract_pdf_text(data, max_pages=max_pages)
-    normalized = normalize_text(content)
+    normalized = normalize_text(_join_pdf_lines(content))
     if not normalized:
         raise DocumentLoadError("PDF is empty after normalization")
     title = pdf_title or _infer_title(filename, normalized)
@@ -363,6 +407,7 @@ def load_bytes(
     *,
     content_type: str | None = None,
     max_bytes: int = 2_000_000,
+    max_pdf_bytes: int = 20_000_000,
     max_pdf_pages: int = 500,
 ) -> LoadedDocument:
     """Load an uploaded document while enforcing type and size limits."""
@@ -373,8 +418,9 @@ def load_bytes(
         raise DocumentLoadError(f"unsupported file type: {suffix or 'unknown'}")
     if not data:
         raise DocumentLoadError("document is empty")
-    if len(data) > max_bytes:
-        raise DocumentLoadError(f"document exceeds the {max_bytes} byte limit")
+    size_limit = max_pdf_bytes if suffix == ".pdf" else max_bytes
+    if len(data) > size_limit:
+        raise DocumentLoadError(f"document exceeds the {size_limit} byte limit")
 
     allowed_types = _PDF_CONTENT_TYPES if suffix == ".pdf" else _TEXT_CONTENT_TYPES
     resolved_type = (content_type or "").split(";", 1)[0].strip().lower()
@@ -421,6 +467,7 @@ def load_file(
     path: str | Path,
     *,
     max_bytes: int = 2_000_000,
+    max_pdf_bytes: int = 20_000_000,
     max_pdf_pages: int = 500,
 ) -> LoadedDocument:
     """Load one supported markdown, text or PDF file."""
@@ -431,8 +478,9 @@ def load_file(
     if file_path.suffix.lower() not in SUPPORTED_SUFFIXES:
         raise DocumentLoadError(f"unsupported file type: {file_path.suffix or 'unknown'}")
     size = file_path.stat().st_size
-    if size > max_bytes:
-        raise DocumentLoadError(f"document exceeds the {max_bytes} byte limit")
+    size_limit = max_pdf_bytes if file_path.suffix.lower() == ".pdf" else max_bytes
+    if size > size_limit:
+        raise DocumentLoadError(f"document exceeds the {size_limit} byte limit")
 
     if file_path.suffix.lower() == ".pdf":
         return _pdf_loaded_document(
@@ -482,6 +530,7 @@ def load_directory(
     *,
     recursive: bool = True,
     max_bytes: int = 2_000_000,
+    max_pdf_bytes: int = 20_000_000,
     max_pdf_pages: int = 500,
     strict: bool = False,
 ) -> list[LoadedDocument]:
@@ -514,6 +563,7 @@ def load_directory(
             loaded = load_file(
                 file_path,
                 max_bytes=max_bytes,
+                max_pdf_bytes=max_pdf_bytes,
                 max_pdf_pages=max_pdf_pages,
             )
         except DocumentLoadError as exc:

@@ -45,7 +45,13 @@ def _make_pdf(text: str) -> bytes:
 
 def test_text_pdf_is_loaded_with_page_metadata():
     pdf = _make_pdf("Annual leave is 10 days.")
-    loaded = load_bytes("policy.pdf", pdf, content_type="application/pdf")
+    loaded = load_bytes(
+        "policy.pdf",
+        pdf,
+        content_type="application/pdf",
+        max_bytes=1,
+        max_pdf_bytes=len(pdf) + 1,
+    )
 
     assert "Annual leave is 10 days." in loaded.content
     assert loaded.content_type == "application/pdf"

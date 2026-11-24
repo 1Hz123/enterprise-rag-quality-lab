@@ -190,7 +190,8 @@ class IntelligentOrganization:
 
     def _experience_signature(self) -> str:
         return (
-            f"{PROMPT_VERSION}|{self.pipeline.generator.mode}|"
+            f"{PROMPT_VERSION}|"
+            f"{getattr(self.pipeline.generator, 'cache_signature', self.pipeline.generator.mode)}|"
             f"{self.settings.embedding_provider}:{self.settings.embedding_dimension}|"
             f"top_k:{self.settings.top_k}|chunk:{self.settings.chunk_size}/"
             f"{self.settings.chunk_overlap}"

@@ -69,6 +69,7 @@ async def upload_document(
             data,
             content_type=file.content_type,
             max_bytes=settings.max_document_bytes,
+            max_pdf_bytes=settings.max_pdf_bytes,
             max_pdf_pages=settings.max_pdf_pages,
         )
         payload = document_create_from_loaded(loaded)

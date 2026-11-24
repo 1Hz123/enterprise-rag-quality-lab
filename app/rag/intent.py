@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 
 from app.knowledge.embeddings import lexical_tokens
@@ -27,6 +28,9 @@ LEAVE_TYPES = (
 )
 _GENERIC_LEAVE_TERMS = ("假期", "休假", "请假")
 _QUANTITY_TERMS = ("多少天", "几天", "多少", "天数", "多长时间")
+# Bigrams crossing question particles (e.g. "有什", "少人", "盐那") are
+# retrieval noise, not question subjects.
+_FOCUS_NOISE_CHARS = frozenset("的了吗呢吧啊是有这那哪什么多少几")
 
 # Generic words that make almost any policy chunk look relevant. They should
 # not count as evidence that the answer addresses the question's subject.
@@ -96,8 +100,26 @@ def focus_tokens(question: str) -> list[str]:
     return [
         token
         for token in lexical_tokens(question)
-        if token not in _FOCUS_STOPWORDS and len(token) > 1
+        if token not in _FOCUS_STOPWORDS
+        and len(token) > 1
+        and not any(char in _FOCUS_NOISE_CHARS for char in token)
     ]
+
+
+_ASPECT_SPLIT_RE = re.compile(r"[：:，,、；;]\s*")
+
+
+def question_aspects(question: str) -> list[frozenset[str]]:
+    """Split a multi-part question into its separately answerable facets."""
+
+    aspects: list[frozenset[str]] = []
+    for segment in _ASPECT_SPLIT_RE.split(question):
+        tokens = focus_tokens(segment)
+        if tokens:
+            aspect = frozenset(tokens)
+            if aspect not in aspects:
+                aspects.append(aspect)
+    return aspects
 
 
 def is_ambiguous_leave_question(question: str) -> bool:
@@ -124,10 +146,14 @@ def focus_coverage(question: str, texts: Iterable[str]) -> tuple[list[str], floa
 
 
 def answer_covers_focus(question: str, answer: str) -> bool:
-    """Whether the answer mentions at least one focus term from the question."""
+    """Whether the answer covers every separately asked facet.
 
-    focus = focus_tokens(question)
-    if not focus:
+    A single focus hit is not enough for “多少人、多少年、风险、争议” style
+    questions; each facet needs at least one supporting term in the answer.
+    """
+
+    aspects = question_aspects(question)
+    if not aspects:
         return True
     answer_tokens = set(lexical_tokens(answer))
-    return bool(set(focus).intersection(answer_tokens))
+    return all(bool(aspect.intersection(answer_tokens)) for aspect in aspects)

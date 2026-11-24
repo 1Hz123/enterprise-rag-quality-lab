@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented here. The format loosely follows Keep a Changelog and the project uses semantic versioning.
 
+## [1.3.1] - 2026-11-24
+
+### Fixed
+
+- Added a PDF-specific `RAG_LAB_MAX_PDF_BYTES` limit (default 20MB), so large text PDFs are no longer skipped by the 2MB text-file limit.
+- PDF hard-wrapped lines are rejoined before chunking; extracts no longer split “20995 人，跟踪了 4.74 年” into unusable fragments.
+- Extractive answers now cover every separately asked facet (people, years, effect, controversy), not just the sentence with the highest death-risk score.
+- Answer relevance requires all question aspects, not a single focus hit.
+- Experience signatures include the extractor signature, so old incomplete experiences are not reused; a stale experience that fails relevance is deleted.
+
+### Verified
+
+- The 6.48MB `HowToLiveBetter.pdf` is ingested and the low-sodium-salt question now answers:
+  - 20,995 participants
+  - 4.74 years
+  - 12% lower death risk
+  - controversy: high-risk elderly population, benefits smaller for healthy young people.
+- 73 tests pass; curated 21-case eval remains 21/21 with 100% citation precision.
+
 ## [1.3.0] - 2026-11-24
 
 ### Added

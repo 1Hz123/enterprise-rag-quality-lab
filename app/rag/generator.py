@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 from app.config import Settings
 from app.knowledge.embeddings import lexical_tokens
+from app.rag.intent import focus_tokens, question_aspects
 from app.rag.prompt import (
     NO_CONTEXT_ANSWER,
     ContextItem,
@@ -25,8 +26,10 @@ from app.rag.prompt import (
 )
 
 _SENTENCE_RE = re.compile(r"(?<=[。！？!?；;])\s*|(?<=[.!?])\s+|\n+")
-_BULLET_RE = re.compile(r"^\s{0,3}(?:[-*+]|\d+[.)])\s+")
+_BULLET_RE = re.compile(r"^\s{0,3}(?:[-*+•]|\d+[.)])\s+")
+_CONTROVERSY_RE = re.compile(r"^(?:备注[:：])?争议[。.!?]?$")
 _CITATION_RE = re.compile(r"\[(\d{1,2})\]")
+_REFERENCE_RE = re.compile(r"https?://|doi\.org|\bdoi\b|^来源[:：]|^参考文献")
 _NUMERIC_INTENT_TERMS = (
     "多少",
     "几天",
@@ -77,7 +80,21 @@ def _sentences(text: str) -> list[str]:
             # Markdown table separator, not a content row.
             continue
         sentences.append(sentence)
-    return sentences
+
+    # “备注：争议。” is a heading-like sentence. Keep the immediately following
+    # explanation with it, otherwise the extractive answer says only “争议”
+    # without saying what the controversy is.
+    merged: list[str] = []
+    index = 0
+    while index < len(sentences):
+        sentence = sentences[index]
+        if _CONTROVERSY_RE.match(sentence) and index + 1 < len(sentences):
+            merged.append(f"{sentence} {sentences[index + 1]}")
+            index += 2
+        else:
+            merged.append(sentence)
+            index += 1
+    return merged
 
 
 def _numeric_signal(question: str, sentence: str) -> float:
@@ -119,22 +136,31 @@ class ExtractiveGenerator:
 
     mode = "extractive"
 
-    def __init__(self, max_answer_chars: int = 1200) -> None:
+    def __init__(self, max_answer_chars: int = 1200, max_sentences: int = 5) -> None:
         self.max_answer_chars = max_answer_chars
-        self.cache_signature = f"extractive:v1:max_answer_chars={max_answer_chars}"
+        self.max_sentences = max_sentences
+        self.cache_signature = (
+            f"extractive:v3:max_answer_chars={max_answer_chars}:"
+            f"max_sentences={max_sentences}"
+        )
 
     def generate(self, question: str, items: list[ContextItem]) -> Generation:
         candidates: list[tuple[float, ContextItem, str]] = []
         seen: set[str] = set()
+        aspects = question_aspects(question)
+        query_focus = set(focus_tokens(question))
 
         for item in items:
             for sentence in _sentences(item.text):
                 normalized = re.sub(r"\s+", "", sentence)
-                if normalized in seen:
+                if normalized in seen or _REFERENCE_RE.search(sentence):
                     continue
                 seen.add(normalized)
                 score = _sentence_score(question, sentence, item)
-                if score >= 0.12:
+                sentence_tokens = set(lexical_tokens(sentence))
+                covers_aspect = any(aspect.intersection(sentence_tokens) for aspect in aspects)
+                focus_hit = bool(query_focus.intersection(sentence_tokens))
+                if covers_aspect or (score >= 0.12 and (focus_hit or not query_focus)):
                     candidates.append((score, item, sentence))
 
         if not candidates:
@@ -142,43 +168,51 @@ class ExtractiveGenerator:
 
         candidates.sort(key=lambda candidate: (-candidate[0], candidate[1].index))
         selected: list[tuple[float, ContextItem, str]] = []
-        query_tokens = set(lexical_tokens(question))
+        covered_aspects: set[int] = set()
 
-        # Always keep the strongest sentence. A second source is only allowed
-        # when it contributes at least one query token that the primary source
-        # does not contain at all; this prevents unrelated documents from being
-        # cited merely because they share a generic term such as "工作日".
-        primary = candidates[0]
-        primary_source = primary[1].chunk.source
-        primary_source_tokens: set[str] = set()
-        for item in items:
-            if item.chunk.source == primary_source:
-                primary_source_tokens.update(lexical_tokens(item.text))
+        def new_aspects(candidate: tuple[float, ContextItem, str]) -> set[int]:
+            tokens = set(lexical_tokens(candidate[2]))
+            return {
+                index
+                for index, aspect in enumerate(aspects)
+                if aspect.intersection(tokens) and index not in covered_aspects
+            }
 
-        selected.append(primary)
-        selected_sources = {primary_source}
+        limit = self.max_sentences if len(aspects) > 1 else min(3, self.max_sentences)
+        primary_index = candidates[0][1].index
+        primary_pool = [
+            candidate for candidate in candidates if candidate[1].index == primary_index
+        ]
 
-        second_source_options: list[tuple[int, float, tuple[float, ContextItem, str]]] = []
-        for candidate in candidates[1:]:
-            score, item, sentence = candidate
-            if item.chunk.source == primary_source:
-                continue
-            novel_tokens = (query_tokens & set(lexical_tokens(sentence))) - primary_source_tokens
-            if len(novel_tokens) >= 2 and score >= primary[0] * 0.60:
-                second_source_options.append((len(novel_tokens), score, candidate))
-        if second_source_options:
-            second_source_options.sort(key=lambda option: (-option[0], -option[1]))
-            chosen = second_source_options[0][2]
-            selected.append(chosen)
-            selected_sources.add(chosen[1].chunk.source)
+        def covers_all_aspects(pool: list[tuple[float, ContextItem, str]]) -> bool:
+            if not aspects:
+                return True
+            pool_tokens = [set(lexical_tokens(candidate[2])) for candidate in pool]
+            return all(
+                any(aspect.intersection(tokens) for tokens in pool_tokens)
+                for aspect in aspects
+            )
 
-        for candidate in candidates:
-            if len(selected) >= 3:
-                break
-            if candidate in selected:
-                continue
-            if candidate[1].chunk.source in selected_sources:
-                selected.append(candidate)
+        # If the primary chunk covers every facet, do not cite a second source
+        # merely to pad the answer; that was the main citation-precision leak.
+        remaining = list(primary_pool if covers_all_aspects(primary_pool) else candidates)
+        while remaining and len(selected) < limit:
+            if selected:
+                # Prefer the top-ranked context item when it already covers an
+                # aspect; this keeps PDF page/section bleed out of the answer.
+                best = max(
+                    remaining,
+                    key=lambda candidate: (
+                        len(new_aspects(candidate)),
+                        -candidate[1].index,
+                        candidate[0],
+                    ),
+                )
+            else:
+                best = remaining[0]
+            selected.append(best)
+            covered_aspects.update(new_aspects(best))
+            remaining.remove(best)
 
         used_indices: set[int] = set()
         quotes: dict[int, str] = {}
