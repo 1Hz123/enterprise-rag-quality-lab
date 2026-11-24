@@ -6,7 +6,7 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-10-26（E0–E2）；2026-10-28（E3）；2026-11-14（E4）；2026-11-16（E5）；2026-11-18（E6）；2026-11-23（E7）；2026-11-24（E8） |
+| 日期 | 2026-10-26（E0–E2）；2026-10-28（E3）；2026-11-14（E4）；2026-11-16（E5）；2026-11-18（E6）；2026-11-23（E7）；2026-11-24（E8–E9） |
 | OS | Windows |
 | Python | 3.12.5 |
 | 语料 | `data/sample_docs/` 7 篇（含 2025 历史版本），约 15 KB |
@@ -267,11 +267,40 @@
 
 **结论**：这次修复的是“答非所问”，不是引用造假。当前焦点判断是词面规则，同义改写仍可能误拒；后续应使用 embedding/NLI judge，并单独统计误拒率。
 
+## E9：文本型 PDF 入库
+
+**假设**：企业制度大量以 PDF 存在；只要 PDF 含可选中文本，就可以抽取后复用现有切块、版本、检索、引用和评测链路，不需要改数据库 schema。
+
+**改动**：
+
+1. 运行时新增 `pypdf`；`load_bytes` / `load_file` / `load_directory` 支持 `.pdf`。
+2. 逐页 `extract_text()`，按空行合并；空页跳过。
+3. 文档 metadata 记录 `page_count`、`pdf_title`、`encoding=pdf-text`，`content_type=application/pdf`。
+4. 上传接口、单文件 CLI、递归目录都传入 `RAG_LAB_MAX_PDF_PAGES`。
+5. 扫描型 PDF 没有可提取文本时明确报错“requires OCR”，不生成空文档。
+6. 加密 PDF 空密码无法解密时拒绝。
+
+**验收结果**：
+
+| 指标 | 结果 |
+|---|---:|
+| 测试 | 73 passed |
+| 覆盖率 | 82.0% |
+| 21 题基线 | 21/21 |
+| 非法引用率 | 0.0% |
+| 质量门禁 | PASS |
+| 延迟（无缓存） | p50 7.4 ms，p95 8.1 ms |
+| PDF 文本提取/上传 | PASS |
+| 无文本 PDF | 400，提示 OCR |
+| Bandit | 0 findings |
+
+**结论**：文本型 PDF 已进入主链路；扫描件、复杂表格和逐页 chunk 页码仍未完成。当前 PDF 只记录 `page_count`，chunk 没有 `page` 字段，因此引用只能定位到文档/chunk，不能精确到页。
+
 ## 测试验证
 
 ```text
-70 passed
-coverage: 82.3%
+73 passed
+coverage: 82.0%
 ```
 
 覆盖内容包括：
@@ -285,6 +314,7 @@ coverage: 82.3%
 - 智能体团队状态、多时点对比、经验复用、反馈提升/抑制、受控进化和中文数字查询。
 - chunk 元数据/heading path、fenced code block、frontmatter 横线、GBK、英文分句、混合中英 token 和维度不匹配。
 - 原始非法引用率/门禁、fingerprint 判重、同正文不同生效期、版本快照、句子级 quote、经验跨天复用。
+- PDF 文本提取、页数 metadata、上传入库、无文本/扫描型 PDF 拒绝。
 - Redis 缓存的 hit/miss、TTL、float32 往返、索引版本失效、SCAN 清理、负缓存、singleflight、慢连接 fail-fast、熔断冷却和 Redis 不可用 API 降级。
 - 宽泛“假期”问题澄清、检索焦点零命中拒答、Auditor 答案相关性、错误经验拒绝。
 
@@ -303,13 +333,13 @@ coverage: 82.3%
 
 | 编号 | 假设 | 设计 | 主要指标 |
 |---|---|---|---|
-| E9 | 同义改写会显著拉低哈希召回 | 为 21 题各写 3 个改写，不新增语料 | hit@5、拒答率 |
-| E10 | 干扰文档会暴露引用精确率问题 | 每篇主题加入 3 篇相似但错误的旧版本文档 | citation precision、pass rate |
-| E11 | 句子级归因比“文档级引用”更严格 | 标注支持句，加入 NLI/LLM judge | attribution accuracy |
-| E12 | 训练好的 embedding 优于哈希向量 | 同一切块和生成器，仅替换 embedding | MRR、hit@5、延迟 |
-| E13 | 抽取式生成器是当前上限 | 接入 OpenAI 兼容生成器，使用相同上下文 | 人工评分、faithfulness |
-| E14 | 规则注入防护存在误伤 | 构造 20 条“讨论注入而非执行注入”的问题 | false positive rate |
-| E15 | 权限过滤缺失是生产阻塞 | 增加文档 ACL 和租户隔离测试 | 越权率 |
+| E10 | 同义改写会显著拉低哈希召回 | 为 21 题各写 3 个改写，不新增语料 | hit@5、拒答率 |
+| E11 | 干扰文档会暴露引用精确率问题 | 每篇主题加入 3 篇相似但错误的旧版本文档 | citation precision、pass rate |
+| E12 | 句子级归因比“文档级引用”更严格 | 标注支持句，加入 NLI/LLM judge | attribution accuracy |
+| E13 | 训练好的 embedding 优于哈希向量 | 同一切块和生成器，仅替换 embedding | MRR、hit@5、延迟 |
+| E14 | 抽取式生成器是当前上限 | 接入 OpenAI 兼容生成器，使用相同上下文 | 人工评分、faithfulness |
+| E15 | 规则注入防护存在误伤 | 构造 20 条“讨论注入而非执行注入”的问题 | false positive rate |
+| E16 | 权限过滤缺失是生产阻塞 | 增加文档 ACL 和租户隔离测试 | 越权率 |
 
 ## 可复现命令
 

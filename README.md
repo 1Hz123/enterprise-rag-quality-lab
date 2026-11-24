@@ -100,8 +100,8 @@ uvicorn app.main:app --reload
 ### 方式三：Docker
 
 ```bash
-docker build -t enterprise-rag-quality-lab:1.2.1 .
-docker run --rm -p 8000:8000 enterprise-rag-quality-lab:1.2.1
+docker build -t enterprise-rag-quality-lab:1.3.0 .
+docker run --rm -p 8000:8000 enterprise-rag-quality-lab:1.3.0
 ```
 
 镜像基于 `python:3.11-slim`，使用非 root 用户，暴露 8000，并带 `/health` 健康检查。详见 [Dockerfile](Dockerfile)。
@@ -113,6 +113,33 @@ docker run --rm -p 8000:8000 enterprise-rag-quality-lab:1.2.1
 - 智能组织状态：<http://127.0.0.1:8000/api/v1/organization>
 
 首次启动会自动把 `data/sample_docs/` 下的 7 篇文档写入 `data/rag_lab.db`。重复启动是幂等的；文档内容变化后会重新切块和索引。
+
+## 支持的文档格式
+
+| 格式 | 支持 | 说明 |
+|---|---|---|
+| `.md` / `.markdown` | ✅ | Markdown 标题、frontmatter、代码块、heading path |
+| `.txt` | ✅ | UTF-8 / UTF-8 BOM，失败回退 GB18030 |
+| `.pdf` | ✅ 文本型 | 用 `pypdf` 提取可选中文本，支持多页合并 |
+| 扫描型 PDF | ❌ | 没有 OCR；会返回“requires OCR”而不是空答案 |
+| 加密 PDF | ❌ | 空密码也无法解密时拒绝 |
+| `.docx` / `.xlsx` / `.html` / 图片 | ❌ | 当前没有对应解析器 |
+
+PDF 细节：
+
+- 单文件默认上限 `RAG_LAB_MAX_DOCUMENT_BYTES=2000000`；较大的 PDF 请调高该值（配置允许到 20MB）；
+- 页数上限 `RAG_LAB_MAX_PDF_PAGES=500`；
+- 提取后的文档 `content_type=application/pdf`，metadata 记录 `page_count` 和 `pdf_title`；
+- PDF 的每一页文本按空行合并后进入现有切块/embedding/引用链路；
+- 当前没有逐页 chunk 的页码字段，引用定位到文档与 chunk；逐页引用需要后续把 `page` 写进 chunk metadata；
+- 扫描件请先 OCR 成文本或可选中 PDF，再入库。
+
+上传入口：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/documents/upload \
+  -F "file=@employee-handbook.pdf;type=application/pdf"
+```
 
 ## Redis 缓存（可选，默认关闭）
 
@@ -299,7 +326,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/organization/evolve \
 | `POST` | `/api/v1/organization/evolve` | 受控阈值搜索与可选应用 |
 | `GET` | `/api/v1/documents` | 文档列表；支持 `?as_of=YYYY-MM-DD` 过滤有效版本 |
 | `POST` | `/api/v1/documents` | 提交正文；支持制度版本元数据 |
-| `POST` | `/api/v1/documents/upload` | 上传 UTF-8 的 `.md` / `.txt` |
+| `POST` | `/api/v1/documents/upload` | 上传 `.md` / `.txt` / 文本型 `.pdf` |
 | `POST` | `/api/v1/documents/ingest-sample` | 幂等同步示例语料 |
 | `GET` | `/api/v1/documents/{id}` | 文档详情和完整正文 |
 | `GET` | `/api/v1/documents/{id}/versions` | 版本快照与历史正文 |
@@ -433,7 +460,7 @@ effective_from: 2026-01-01
 
 ## 依赖、License 与漏洞审计
 
-- 运行时 25 个依赖：**0 个已知 CVE**。
+- 运行时审计 24 个依赖：**0 个已知 CVE**。
 - 全依赖（含 dev/security）67 个依赖：**0 个已知 CVE**。
 - Bandit 对 `app/` 的静态扫描：**0 findings**。
 - 依赖 License：无 GPL/AGPL/LGPL；运行时全部为 MIT / Apache-2.0 / BSD / PSF。
@@ -477,7 +504,7 @@ enterprise-rag-quality-lab/
 │   ├── dataset.jsonl        # 21 道固定问题
 │   ├── run_eval.py
 │   └── results/baseline.json
-├── tests/                   # 70 个 API / RAG / 版本 / 摄入 / 审计 / 缓存 / 相关性 / 智能组织 / 注入测试
+├── tests/                   # 73 个 API / RAG / 版本 / 摄入 / PDF / 审计 / 缓存 / 相关性 / 智能组织 / 注入测试
 ├── scripts/ingest.py
 ├── scripts/cache_cli.py     # SCAN + UNLINK 清理缓存 namespace
 ├── docs/                    # 架构、实验日志、安全审计
@@ -504,6 +531,8 @@ enterprise-rag-quality-lab/
 | `RAG_LAB_GENERATOR_PROVIDER` | `extractive` | `extractive` 或 `openai` |
 | `RAG_LAB_EXPERIENCE_REUSE_ENABLED` | `true` | 是否允许经验复用 |
 | `RAG_LAB_EXPERIENCE_MIN_QUALITY` | `0.75` | 进入经验库的最低质量分 |
+| `RAG_LAB_MAX_DOCUMENT_BYTES` | `2000000` | 单文件字节上限 |
+| `RAG_LAB_MAX_PDF_PAGES` | `500` | 文本型 PDF 页数上限 |
 | `RAG_LAB_OPENAI_API_KEY` | 空 | 仅 `openai` 模式需要 |
 
 ## 测试与 CI
@@ -513,7 +542,7 @@ python -m ruff check .
 python -m pytest --cov=app --cov-report=term-missing
 ```
 
-当前测试：70 项、覆盖率 82.3%，覆盖 API CRUD、聊天引用、拒答、运行轨迹、切块、检索、21 题评测、制度版本、中文数字、chunk 元数据透传、代码块/GBK/英文分句、原始非法引用审计、fingerprint 判重、版本快照、句子级 quote、经验跨天复用、Redis 三层缓存（命中/未命中/TTL/序列化/降级/冷却/SCAN 清理/singleflight）、缓存开关对照评测、宽泛假期澄清、答案相关性审计、智能体协作和注入防护。CI 使用锁定依赖在 Python 3.12 上执行 lint、80% 覆盖率门禁、基线回归门禁、依赖漏洞扫描、License 检查、Bandit 和 Docker 健康检查。
+当前测试：73 项、覆盖率 82.0%，覆盖 API CRUD、聊天引用、拒答、运行轨迹、切块、检索、21 题评测、制度版本、中文数字、chunk 元数据透传、代码块/GBK/英文分句、PDF 文本提取与上传、原始非法引用审计、fingerprint 判重、版本快照、句子级 quote、经验跨天复用、Redis 三层缓存（命中/未命中/TTL/序列化/降级/冷却/SCAN 清理/singleflight）、缓存开关对照评测、宽泛假期澄清、答案相关性审计、智能体协作和注入防护。CI 使用锁定依赖在 Python 3.12 上执行 lint、80% 覆盖率门禁、基线回归门禁、依赖漏洞扫描、License 检查、Bandit 和 Docker 健康检查。
 
 > 如果受限 Windows 沙箱阻止 pytest 创建临时目录，可预先创建 `data/pytest-runtime` 并设置 `RAG_LAB_TEST_DIR` 指向它。
 
@@ -529,6 +558,8 @@ python -m pytest --cov=app --cov-report=term-missing
 ## 已知限制
 
 - 小语料、固定问题，基线接近满分，不能外推到开放域。
+- PDF 只支持可选中文本；扫描件没有 OCR，复杂表格/双栏排版没有版面重建。
+- PDF 当前记录 `page_count`，但 chunk 没有逐页页码；逐页引用需要扩展 page metadata。
 - 中文检索使用字符 bigram，近义改写和跨语言能力有限。
 - 经验复用基于标准化问题精确匹配，尚未做语义近邻召回。
 - 进化搜索使用同一评测集，存在过拟合风险。

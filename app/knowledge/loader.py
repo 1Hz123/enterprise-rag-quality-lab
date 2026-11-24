@@ -1,4 +1,4 @@
-"""Load trusted text documents from disk or an upload.
+"""Load trusted text documents and text-based PDFs from disk or an upload.
 
 Frontmatter is parsed with a small, dependency-free ``key: value`` reader. Known
 date fields (``effective_from`` / ``effective_until`` / ``published_at`` /
@@ -17,13 +17,17 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+from pypdf import PdfReader
+
 logger = logging.getLogger(__name__)
 
-SUPPORTED_SUFFIXES = {".md", ".markdown", ".txt"}
+SUPPORTED_SUFFIXES = {".md", ".markdown", ".txt", ".pdf"}
 _TEXT_CONTENT_TYPES = {"text/plain", "text/markdown", "text/x-markdown", "application/octet-stream"}
+_PDF_CONTENT_TYPES = {"application/pdf", "application/octet-stream"}
 _H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
 _FRONTMATTER_RE = re.compile(
     r"\A---[ \t]*\n(?P<body>.*?)\n---[ \t]*(?:\n|\Z)",
@@ -269,12 +273,97 @@ def _decode(data: bytes) -> tuple[str, str]:
     raise DocumentLoadError("document must be UTF-8 or GB18030 encoded text")
 
 
+def _extract_pdf_text(
+    data: bytes,
+    *,
+    max_pages: int,
+) -> tuple[str, int, str | None]:
+    """Extract selectable text from a PDF; scanned PDFs must use OCR upstream."""
+
+    try:
+        reader = PdfReader(BytesIO(data))
+    except Exception as exc:
+        raise DocumentLoadError("PDF could not be parsed") from exc
+
+    if reader.is_encrypted:
+        try:
+            reader.decrypt("")
+        except Exception as exc:
+            raise DocumentLoadError("encrypted PDF is not supported") from exc
+        if reader.is_encrypted:
+            raise DocumentLoadError("encrypted PDF is not supported")
+
+    try:
+        page_count = len(reader.pages)
+    except Exception as exc:
+        raise DocumentLoadError("PDF page list could not be read") from exc
+    if page_count > max_pages:
+        raise DocumentLoadError(
+            f"PDF has {page_count} pages, exceeding the {max_pages} page limit"
+        )
+
+    page_texts: list[str] = []
+    for page in reader.pages:
+        try:
+            text = page.extract_text() or ""
+        except Exception as exc:
+            raise DocumentLoadError("PDF page text extraction failed") from exc
+        text = text.strip()
+        if text:
+            page_texts.append(text)
+
+    if not page_texts:
+        raise DocumentLoadError(
+            "PDF contains no extractable text; scanned PDFs require OCR"
+        )
+
+    pdf_title: str | None = None
+    try:
+        raw_title = reader.metadata.title if reader.metadata else None
+        if raw_title:
+            pdf_title = str(raw_title).strip()[:200] or None
+    except Exception:
+        pdf_title = None
+
+    return "\n\n".join(page_texts), page_count, pdf_title
+
+
+def _pdf_loaded_document(
+    *,
+    filename: str,
+    data: bytes,
+    max_pages: int,
+    origin: str,
+) -> LoadedDocument:
+    content, page_count, pdf_title = _extract_pdf_text(data, max_pages=max_pages)
+    normalized = normalize_text(content)
+    if not normalized:
+        raise DocumentLoadError("PDF is empty after normalization")
+    title = pdf_title or _infer_title(filename, normalized)
+    return LoadedDocument(
+        title=title,
+        source=filename,
+        content=normalized,
+        content_type="application/pdf",
+        metadata={
+            "filename": filename,
+            "extension": ".pdf",
+            "size_bytes": len(data),
+            "encoding": "pdf-text",
+            "page_count": page_count,
+            "pdf_title": pdf_title,
+            "origin": origin,
+        },
+    )
+
+
 def load_bytes(
     filename: str,
     data: bytes,
     *,
     content_type: str | None = None,
     max_bytes: int = 2_000_000,
+    max_pdf_pages: int = 500,
 ) -> LoadedDocument:
     """Load an uploaded document while enforcing type and size limits."""
 
@@ -287,11 +376,20 @@ def load_bytes(
     if len(data) > max_bytes:
         raise DocumentLoadError(f"document exceeds the {max_bytes} byte limit")
 
+    allowed_types = _PDF_CONTENT_TYPES if suffix == ".pdf" else _TEXT_CONTENT_TYPES
     resolved_type = (content_type or "").split(";", 1)[0].strip().lower()
-    if resolved_type and resolved_type not in _TEXT_CONTENT_TYPES:
+    if resolved_type and resolved_type not in allowed_types:
         guessed = mimetypes.guess_type(clean_name)[0]
-        if guessed not in _TEXT_CONTENT_TYPES:
+        if guessed not in allowed_types:
             raise DocumentLoadError(f"unsupported content type: {resolved_type}")
+
+    if suffix == ".pdf":
+        return _pdf_loaded_document(
+            filename=clean_name,
+            data=data,
+            max_pages=max_pdf_pages,
+            origin="upload",
+        )
 
     decoded, encoding = _decode(data)
     normalized = normalize_text(decoded)
@@ -319,8 +417,13 @@ def load_bytes(
     )
 
 
-def load_file(path: str | Path, *, max_bytes: int = 2_000_000) -> LoadedDocument:
-    """Load one UTF-8 markdown or text file."""
+def load_file(
+    path: str | Path,
+    *,
+    max_bytes: int = 2_000_000,
+    max_pdf_pages: int = 500,
+) -> LoadedDocument:
+    """Load one supported markdown, text or PDF file."""
 
     file_path = Path(path)
     if not file_path.is_file():
@@ -330,6 +433,14 @@ def load_file(path: str | Path, *, max_bytes: int = 2_000_000) -> LoadedDocument
     size = file_path.stat().st_size
     if size > max_bytes:
         raise DocumentLoadError(f"document exceeds the {max_bytes} byte limit")
+
+    if file_path.suffix.lower() == ".pdf":
+        return _pdf_loaded_document(
+            filename=file_path.name,
+            data=file_path.read_bytes(),
+            max_pages=max_pdf_pages,
+            origin="disk",
+        )
 
     decoded, encoding = _decode(file_path.read_bytes())
     normalized = normalize_text(decoded)
@@ -371,6 +482,7 @@ def load_directory(
     *,
     recursive: bool = True,
     max_bytes: int = 2_000_000,
+    max_pdf_pages: int = 500,
     strict: bool = False,
 ) -> list[LoadedDocument]:
     """Load every supported document in deterministic filename order.
@@ -399,7 +511,11 @@ def load_directory(
     for file_path in files:
         source = file_path.relative_to(directory).as_posix()
         try:
-            loaded = load_file(file_path, max_bytes=max_bytes)
+            loaded = load_file(
+                file_path,
+                max_bytes=max_bytes,
+                max_pdf_pages=max_pdf_pages,
+            )
         except DocumentLoadError as exc:
             if strict:
                 raise

@@ -629,6 +629,7 @@ class DocumentService:
         loaded_documents = load_directory(
             directory,
             max_bytes=self.settings.max_document_bytes,
+            max_pdf_pages=self.settings.max_pdf_pages,
         )
         ingested = 0
         updated = 0

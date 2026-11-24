@@ -16,13 +16,13 @@
 - 不是在开放域上追求 SOTA 的问答系统。
 - 不是生产级多租户知识库。
 - 不把 `extractive` 生成器当作最终答案体验；它是可解释、零成本的对照与 fallback。
-- 当前不处理 OCR、PDF 版面解析、图片、表格结构和超长文档。
+- 当前不处理 OCR、扫描型/复杂版面 PDF、图片、表格结构和超长文档；只支持含可选中文本的 PDF。
 
 ## 2. 组件图
 
 ```mermaid
 flowchart TD
-    A[Markdown / TXT] --> B[Loader]
+    A[Markdown / TXT / 文本型 PDF] --> B[Loader]
     B --> C[Section-aware Splitter]
     C --> D[Hashing Embeddings]
     C --> E[(SQLite chunks)]
@@ -170,8 +170,10 @@ Coordinator → Retriever → Reasoner → Auditor → Experience
 
 ### 加载
 
-- 只接受 UTF-8 的 `.md`、`.markdown`、`.txt`。
-- 拒绝二进制、空文档、超出大小限制的文件。
+- 接受 `.md`、`.markdown`、`.txt` 和文本型 `.pdf`。
+- PDF 用 `pypdf` 逐页提取可选中文本，按空行合并；记录 `page_count` 和可选的 `pdf_title`。
+- 扫描型 PDF 没有可提取文本时拒绝，并提示需要 OCR；加密 PDF 空密码无法解密时拒绝。
+- 拒绝二进制、空文档、超出大小限制的文件；PDF 还有页数上限。
 - 规范化 BOM、CRLF 和行尾空白。
 - 支持 Markdown 文件头的简单 `key: value` frontmatter，用于 `policy_key`、`version`、`effective_from/until` 和标题。
 - frontmatter 在进入正文和引用前被剥离，不会污染答案。

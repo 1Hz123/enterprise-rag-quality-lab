@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented here. The format loosely follows Keep a Changelog and the project uses semantic versioning.
 
+## [1.3.0] - 2026-11-24
+
+### Added
+
+- Text-based PDF ingestion via `pypdf`: upload endpoint, single-file CLI and recursive directory ingestion.
+- PDF page text is merged into the existing chunk/embedding/citation pipeline; document metadata records `page_count` and optional `pdf_title`.
+- `RAG_LAB_MAX_PDF_PAGES` (default 500) and page-count validation.
+- PDF tests for text extraction, upload and textless/scanned rejection.
+
+### Notes
+
+- Scanned PDFs are rejected with an explicit “requires OCR” error; OCR is not included.
+- Encrypted PDFs are rejected if the empty password cannot decrypt them.
+- Page-level chunk metadata is not yet implemented; citations currently identify the document and chunk.
+
 ## [1.2.1] - 2026-11-24
 
 ### Fixed

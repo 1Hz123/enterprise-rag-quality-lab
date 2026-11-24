@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "Enterprise RAG Quality Lab"
-    app_version: str = "1.2.1"
+    app_version: str = "1.3.0"
     environment: Literal["development", "test", "production"] = "development"
     debug: bool = False
     log_level: str = "INFO"
@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     min_query_coverage: float = Field(default=0.30, ge=0.0, le=1.0)
     max_question_chars: int = Field(default=2000, ge=10, le=10000)
     max_document_bytes: int = Field(default=2_000_000, ge=1024, le=20_000_000)
+    max_pdf_pages: int = Field(default=500, ge=1, le=5000)
 
     embedding_provider: Literal["hashing"] = "hashing"
     embedding_dimension: int = Field(default=384, ge=64, le=4096)

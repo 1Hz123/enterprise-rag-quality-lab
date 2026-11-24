@@ -59,7 +59,7 @@ def create_document(payload: DocumentCreate, request: Request) -> DocumentDetail
 @router.post("/upload", response_model=DocumentDetail, status_code=status.HTTP_201_CREATED)
 async def upload_document(
     request: Request,
-    file: UploadFile = File(..., description="UTF-8 .md or .txt document"),
+    file: UploadFile = File(..., description="Markdown, text or text-based PDF"),
 ) -> DocumentDetail:
     settings = request.app.state.settings
     data = await file.read(settings.max_document_bytes + 1)
@@ -69,6 +69,7 @@ async def upload_document(
             data,
             content_type=file.content_type,
             max_bytes=settings.max_document_bytes,
+            max_pdf_pages=settings.max_pdf_pages,
         )
         payload = document_create_from_loaded(loaded)
         return request.app.state.document_service.create_document(payload)
