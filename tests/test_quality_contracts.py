@@ -58,6 +58,21 @@ def test_citation_contains_verified_sentence_quote(seeded_client):
     assert citation["quote"] in citation["snippet"] or citation["quote"][:20] in citation["snippet"]
 
 
+def test_generic_leave_question_asks_for_clarification(seeded_client):
+    response = seeded_client.post(
+        "/api/v1/chat",
+        json={"question": "员工的假期是多少天", "as_of": "2026-06-01"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["refused"] is True
+    assert payload["citations"] == []
+    assert payload["experience_ids"] == []
+    assert "年假" in payload["answer"]
+    assert "病假" in payload["answer"]
+
+
 def test_experience_can_be_reused_across_days_for_open_policy_window(seeded_client):
     first = seeded_client.post(
         "/api/v1/chat",

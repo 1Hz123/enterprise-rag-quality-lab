@@ -7,6 +7,7 @@ import time
 from datetime import date
 
 from app.agents.types import AgentTrace, AuditReport, Plan, SubAnswer
+from app.rag.intent import answer_covers_focus
 from app.rag.pipeline import Citation, RagResult
 
 _CITATION_RE = re.compile(r"\[(\d{1,2})\]")
@@ -49,6 +50,7 @@ class AuditorAgent:
             checks["markers_valid"] = True
             checks["quotes_supported"] = True
             checks["no_invalid_citations"] = result.invalid_citation_count == 0
+            checks["answer_relevant"] = True
             checks["temporal_valid"] = True
             checks["multi_task_coverage"] = True
             checks["security_clear"] = True
@@ -66,6 +68,8 @@ class AuditorAgent:
                 for citation in result.citations
             )
             checks["no_invalid_citations"] = result.invalid_citation_count == 0
+            question = plan.subtasks[0].question if plan.subtasks else ""
+            checks["answer_relevant"] = answer_covers_focus(question, result.answer)
             checks["temporal_valid"] = self._temporal_valid(plan, result, sub_answers)
             checks["multi_task_coverage"] = self._multi_task_coverage(plan, sub_answers)
             checks["security_clear"] = not result.security_blocked
@@ -78,6 +82,8 @@ class AuditorAgent:
                 findings.append("citation quote is not present in its chunk")
             if not checks["no_invalid_citations"]:
                 findings.append("generation emitted invalid citation markers")
+            if not checks["answer_relevant"]:
+                findings.append("answer does not cover the question focus")
             if not checks["temporal_valid"]:
                 findings.append("citation is outside its effective window")
             if not checks["multi_task_coverage"]:
@@ -90,6 +96,8 @@ class AuditorAgent:
             quality += 0.15 if checks["markers_valid"] else 0
             quality += 0.10 if checks["temporal_valid"] else 0
             quality += 0.05 if checks["multi_task_coverage"] else 0
+            if not checks["answer_relevant"]:
+                quality = min(quality, 0.5)
             quality = round(min(1.0, quality), 4)
 
         passed = all(checks.values())

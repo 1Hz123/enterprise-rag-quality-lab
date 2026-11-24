@@ -1,7 +1,7 @@
 # 依赖、License 与漏洞审计
 
-审计日期：2026-11-14；代码复核：2026-11-23
-项目版本：1.2.0
+审计日期：2026-11-14；代码复核：2026-11-24
+项目版本：1.2.1
 范围：`uv.lock` 锁定的 Python 依赖 + `app/` 源码
 环境：Windows、Python 3.12.5、uv 0.13.1
 
@@ -106,7 +106,7 @@ fixes: 0
 |---|---|---|---|
 | pytest | 8.4.2 | PYSEC-2026-1845 / CVE-2025-71176（开发环境 tmp 目录问题） | 升级到 pytest 9.2.0 |
 
-升级后 69 项测试全部通过，全依赖 CVE 归零。
+升级后 70 项测试全部通过，全依赖 CVE 归零。
 
 ## 4. Bandit 源码扫描
 
@@ -131,8 +131,8 @@ fixes: 0
 本地 Docker daemon 在本次审计时未运行，因此没有完成本机镜像启动；Dockerfile 和 smoke test 已纳入 CI。构建命令：
 
 ```bash
-docker build -t enterprise-rag-quality-lab:1.2.0 .
-docker run --rm -p 8000:8000 enterprise-rag-quality-lab:1.2.0
+docker build -t enterprise-rag-quality-lab:1.2.1 .
+docker run --rm -p 8000:8000 enterprise-rag-quality-lab:1.2.1
 ```
 
 ## 6. CI 安全门禁

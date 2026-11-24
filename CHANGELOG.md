@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented here. The format loosely follows Keep a Changelog and the project uses semantic versioning.
 
+## [1.2.1] - 2026-11-24
+
+### Fixed
+
+- Ambiguous leave questions such as “员工的假期是多少天” now return a clarification asking for a concrete leave type instead of answering with unrelated sick-pay text.
+- Added question focus terms (generic words removed) and a retrieval focus guard: if no focus term appears in retrieved evidence, the pipeline refuses instead of generating an off-topic answer.
+- Auditor now checks `answer_relevant`; a grounded but off-topic answer fails the audit, is capped at quality 0.5, and is not stored as experience.
+- Existing off-topic experiences are rejected on reuse and deleted.
+- Answer cache schema bumped to 2 so old cached answers cannot bypass the new guard.
+
+### Added
+
+- `app/rag/intent.py` with leave-type detection, clarification text and focus coverage helpers.
+- Regression test `test_generic_leave_question_asks_for_clarification`.
+
 ## [1.2.0] - 2026-11-23
 
 ### Added

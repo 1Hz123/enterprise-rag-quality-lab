@@ -17,6 +17,11 @@ from app.knowledge.embeddings import lexical_tokens
 from app.knowledge.retriever import RetrievedChunk, Retriever
 from app.knowledge.splitter import estimate_tokens
 from app.rag.generator import Generation, Generator
+from app.rag.intent import (
+    CLARIFICATION_ANSWER,
+    focus_coverage,
+    is_ambiguous_leave_question,
+)
 from app.rag.prompt import (
     INJECTION_ANSWER,
     NO_CONTEXT_ANSWER,
@@ -149,6 +154,8 @@ class RAGPipeline:
 
         if looks_like_prompt_injection(prepared):
             return self._blocked_result(prepared, resolved_as_of, started)
+        if is_ambiguous_leave_question(prepared):
+            return self._clarification_result(prepared, resolved_as_of, started)
 
         retrieved = self.retriever.retrieve(
             prepared,
@@ -197,14 +204,22 @@ class RAGPipeline:
     ) -> RagResult:
         started = started or time.perf_counter()
         prepared = self._prepare_question(question)
+        if is_ambiguous_leave_question(prepared):
+            return self._clarification_result(prepared, as_of or date.today(), started)
         resolved_as_of = as_of or date.today()
         top_score = retrieved[0].score if retrieved else 0.0
         top_lexical_score = retrieved[0].lexical_score if retrieved else 0.0
         query_coverage = self.query_coverage(prepared, retrieved)
+        focus, focus_coverage_value = focus_coverage(
+            prepared,
+            (chunk.content for chunk in retrieved),
+        )
         base_metrics: dict[str, Any] = {
             "retrieval_top_score": top_score,
             "retrieval_top_lexical_score": top_lexical_score,
             "query_coverage": round(query_coverage, 4),
+            "focus_tokens": focus,
+            "focus_coverage": round(focus_coverage_value, 4),
             "retrieved_count": len(retrieved),
             "citation_count": 0,
             "context_chars": 0,
@@ -216,11 +231,14 @@ class RAGPipeline:
 
         low_semantic_score = top_score < self.settings.min_retrieval_score
         low_query_coverage = query_coverage < self.settings.min_query_coverage
-        if not retrieved or low_semantic_score or low_query_coverage:
+        no_focus_hit = bool(focus) and focus_coverage_value <= 0.0
+        if not retrieved or low_semantic_score or low_query_coverage or no_focus_hit:
             if not retrieved:
                 refusal_reason = "no_retrieval"
             elif low_query_coverage:
                 refusal_reason = "low_query_coverage"
+            elif no_focus_hit:
+                refusal_reason = "low_focus_coverage"
             else:
                 refusal_reason = "low_retrieval_score"
             return self._refusal_result(
@@ -395,7 +413,7 @@ class RAGPipeline:
         return self.cache.key(
             "answer",
             {
-                "answer_schema": 1,
+                "answer_schema": 2,
                 "question": question,
                 "context": context,
                 "index_version": index_version,
@@ -416,7 +434,7 @@ class RAGPipeline:
             if key not in {"cache", "cache_hit", "cache_layers"}
         }
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "answer": result.answer,
             "raw_answer": result.raw_answer,
             "refused": result.refused,
@@ -439,7 +457,7 @@ class RAGPipeline:
         started: float,
     ) -> RagResult:
         data = json.loads(payload.decode("utf-8"))
-        if data.get("schema_version") != 1:
+        if data.get("schema_version") != 2:
             raise ValueError("unsupported answer cache schema")
         citations = data.get("citations")
         retrieved = data.get("retrieved")
@@ -477,6 +495,50 @@ class RAGPipeline:
             if layer_metrics["hits"] > 0
         ]
         return result
+
+    def clarification_result(
+        self,
+        question: str,
+        *,
+        as_of: date | None = None,
+        started: float | None = None,
+    ) -> RagResult:
+        """Public clarification result for ambiguous leave questions."""
+
+        return self._clarification_result(
+            question,
+            as_of or date.today(),
+            started or time.perf_counter(),
+        )
+
+    def _clarification_result(self, question: str, as_of: date, started: float) -> RagResult:
+        return RagResult(
+            answer=CLARIFICATION_ANSWER,
+            refused=True,
+            security_blocked=False,
+            as_of=as_of,
+            citations=[],
+            retrieved=[],
+            latency_ms=round((time.perf_counter() - started) * 1000, 2),
+            prompt_version=PROMPT_VERSION,
+            mode=self.generator.mode,
+            metrics={
+                "retrieval_top_score": 0.0,
+                "retrieval_top_lexical_score": 0.0,
+                "query_coverage": 0.0,
+                "focus_tokens": [],
+                "focus_coverage": 0.0,
+                "retrieved_count": 0,
+                "citation_count": 0,
+                "context_chars": 0,
+                "sanitized_chunks": 0,
+                "security_event": None,
+                "refusal_reason": "ambiguous_leave_question",
+                "needs_clarification": True,
+                "as_of": as_of.isoformat(),
+                "normalized_question": question,
+            },
+        )
 
     def _blocked_result(self, question: str, as_of: date, started: float) -> RagResult:
         return RagResult(

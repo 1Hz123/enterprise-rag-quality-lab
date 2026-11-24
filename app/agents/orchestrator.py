@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import time
 from datetime import date
 from typing import Any
@@ -19,6 +20,7 @@ from app.agents.types import (
     Subtask,
 )
 from app.config import Settings
+from app.rag.intent import is_ambiguous_leave_question
 from app.rag.pipeline import RAGPipeline, RagResult
 from app.rag.prompt import INJECTION_ANSWER, PROMPT_VERSION, looks_like_prompt_injection
 from app.rag.query import normalize_query
@@ -88,6 +90,12 @@ class IntelligentOrganization:
 
         if looks_like_prompt_injection(prepared):
             return self._blocked_result(prepared, resolved_as_of, started)
+        if is_ambiguous_leave_question(prepared):
+            return self._clarification_organization_result(
+                prepared,
+                resolved_as_of,
+                started,
+            )
 
         if self.settings.experience_reuse_enabled:
             cached = self._try_experience(prepared, resolved_as_of, started)
@@ -242,6 +250,12 @@ class IntelligentOrganization:
         )
         audit, auditor_trace = self.auditor.audit(plan, result, [], cache_hit=True)
         if not audit.passed:
+            if not audit.checks.get("answer_relevant", True):
+                # A stored experience from an older pipeline may be grounded
+                # but unrelated to the question; do not let it poison future
+                # requests.
+                with contextlib.suppress(Exception):
+                    self.experience.delete_experience(record.id)
             return None
 
         agents = [
@@ -292,6 +306,56 @@ class IntelligentOrganization:
             experience_ids=[record.id],
             agents=agents,
             metrics=result.metrics,
+        )
+
+    def _clarification_organization_result(
+        self,
+        question: str,
+        as_of: date,
+        started: float,
+    ) -> OrganizationResult:
+        result = self.pipeline.clarification_result(
+            question,
+            as_of=as_of,
+            started=started,
+        )
+        trace = AgentTrace(
+            agent=self.coordinator.name,
+            action="clarify",
+            status="clarification",
+            detail="宽泛的“假期”问题缺少具体假期类型，先要求澄清",
+            latency_ms=round((time.perf_counter() - started) * 1000, 2),
+            metadata={"reason": "ambiguous_leave_question"},
+        )
+        metrics = {
+            **result.metrics,
+            "organization": True,
+            "plan_strategy": "clarification",
+            "subtask_count": 0,
+            "agent_count": 1,
+            "quality_score": 0.5,
+            "quality_checks": {"needs_clarification": True},
+            "quality_findings": ["leave type is missing"],
+            "experience_reused": False,
+            "experience_ids": [],
+            "agents": [trace.to_dict()],
+        }
+        return OrganizationResult(
+            answer=result.answer,
+            refused=True,
+            security_blocked=False,
+            as_of=as_of,
+            citations=[],
+            retrieved=[],
+            latency_ms=result.latency_ms,
+            prompt_version="organization",
+            mode="organization",
+            plan_strategy="clarification",
+            quality_score=0.5,
+            experience_reused=False,
+            experience_ids=[],
+            agents=[trace],
+            metrics=metrics,
         )
 
     def _blocked_result(self, question: str, as_of: date, started: float) -> OrganizationResult:

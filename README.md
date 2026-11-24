@@ -34,6 +34,7 @@
 - **可替换生成器**：默认 `extractive`，也支持 OpenAI 兼容的 Chat Completions 接口。
 - **可追溯 chunk**：每个 chunk 继承 `source`、`checksum`、制度版本、生效日期和 `heading_path`；引用可定位到来源与版本。
 - **可信评测**：保留生成器原始输出，单独统计非法引用率并纳入 2% 门禁；引用带可校验的句子级 `quote`。
+- **问题焦点与澄清**：宽泛的“假期是多少天”先追问具体假期类型；检索不到任何问题焦点词时拒答；Auditor 再检查答案是否真正覆盖问题焦点，避免“引用真实但答非所问”。
 - **制度版本时间旅行**：按 `as_of` 查询历史时点的有效制度；旧版本自动失效，重叠生效窗口会被拒绝。
 - **版本快照与指纹**：`fingerprint` 唯一约束区分“同正文不同生效期”，`document_versions` 保留每次改版内容。
 - **经验沉淀与复用**：审计通过且质量达标的回答进入经验库；上下文变化后自动失效。
@@ -43,6 +44,27 @@
 - **可选 Redis 缓存**：embedding / retrieval / answer 三层精确缓存；默认关闭，短超时 fail-fast、熔断降级、singleflight、SCAN 清理和 `/health.cache` 可观测。
 - **工程化交付**：FastAPI、Pydantic、SQLite、pytest、Ruff、Dockerfile、GitHub Actions、依赖审计。
 - **可审计运行轨迹**：每个回答保存检索结果、智能体轨迹、引用、质量检查和经验使用情况。
+
+### 问题焦点与答案相关性
+
+只校验“引用真实存在”不够：一段关于病假工资的真实引用，也可能答非所问。v1.2.1 增加三层相关性防线：
+
+1. **宽泛假期先澄清**：问题包含“假期/休假/请假”且询问天数，但没有年假、病假、婚假、产假、丧假、事假、调休等具体类型时，返回澄清答案，不检索、不生成、不沉淀经验。
+2. **检索焦点守卫**：从问题中提取去掉“员工/公司/多少/几天/需要”等泛化词后的焦点词；如果检索结果没有任何焦点词命中，返回拒答，而不是硬答。
+3. **Auditor 答案相关性**：回答必须至少覆盖一个焦点词，否则 `answer_relevant=false`，整次审计不通过，质量分压到 0.5，不进入经验库。旧的答非所问经验复用时也会被拒绝并删除。
+
+例如：
+
+```text
+问题：员工的假期是多少天
+行为：refused=true，返回“请明确年假/病假/婚假/产假/丧假/事假/调休……”
+原因：宽泛问题没有具体假期类型，不能用一个固定天数回答
+```
+
+```text
+问题：员工入职满三年，年假是多少天
+行为：正常回答 10 天，并引用 2026 版员工手册
+```
 
 ## 快速开始
 
@@ -78,8 +100,8 @@ uvicorn app.main:app --reload
 ### 方式三：Docker
 
 ```bash
-docker build -t enterprise-rag-quality-lab:1.2.0 .
-docker run --rm -p 8000:8000 enterprise-rag-quality-lab:1.2.0
+docker build -t enterprise-rag-quality-lab:1.2.1 .
+docker run --rm -p 8000:8000 enterprise-rag-quality-lab:1.2.1
 ```
 
 镜像基于 `python:3.11-slim`，使用非 root 用户，暴露 8000，并带 `/health` 健康检查。详见 [Dockerfile](Dockerfile)。
@@ -324,8 +346,8 @@ python eval/run_eval.py `
 | 非法引用率 | 0.0% |
 | 拒答正确率 | 100% |
 | 提示注入抵抗率 | 100% |
-| 延迟 p50 | 10.8 ms |
-| 延迟 p95 | 11.6 ms |
+| 延迟 p50 | 7.4 ms |
+| 延迟 p95 | 8.1 ms |
 
 运行环境：Windows、Python 3.12.5、SQLite、本地 `hashing-384` 向量、`extractive` 生成器，21 道题单次本地运行。延迟只代表本机进程内计算，不代表生产 SLA。
 
@@ -455,7 +477,7 @@ enterprise-rag-quality-lab/
 │   ├── dataset.jsonl        # 21 道固定问题
 │   ├── run_eval.py
 │   └── results/baseline.json
-├── tests/                   # 69 个 API / RAG / 版本 / 摄入 / 审计 / 缓存 / 智能组织 / 注入测试
+├── tests/                   # 70 个 API / RAG / 版本 / 摄入 / 审计 / 缓存 / 相关性 / 智能组织 / 注入测试
 ├── scripts/ingest.py
 ├── scripts/cache_cli.py     # SCAN + UNLINK 清理缓存 namespace
 ├── docs/                    # 架构、实验日志、安全审计
@@ -491,7 +513,7 @@ python -m ruff check .
 python -m pytest --cov=app --cov-report=term-missing
 ```
 
-当前测试：69 项、覆盖率 82.4%，覆盖 API CRUD、聊天引用、拒答、运行轨迹、切块、检索、21 题评测、制度版本、中文数字、chunk 元数据透传、代码块/GBK/英文分句、原始非法引用审计、fingerprint 判重、版本快照、句子级 quote、经验跨天复用、Redis 三层缓存（命中/未命中/TTL/序列化/降级/冷却/SCAN 清理/singleflight）、缓存开关对照评测、智能体协作和注入防护。CI 使用锁定依赖在 Python 3.12 上执行 lint、80% 覆盖率门禁、基线回归门禁、依赖漏洞扫描、License 检查、Bandit 和 Docker 健康检查。
+当前测试：70 项、覆盖率 82.3%，覆盖 API CRUD、聊天引用、拒答、运行轨迹、切块、检索、21 题评测、制度版本、中文数字、chunk 元数据透传、代码块/GBK/英文分句、原始非法引用审计、fingerprint 判重、版本快照、句子级 quote、经验跨天复用、Redis 三层缓存（命中/未命中/TTL/序列化/降级/冷却/SCAN 清理/singleflight）、缓存开关对照评测、宽泛假期澄清、答案相关性审计、智能体协作和注入防护。CI 使用锁定依赖在 Python 3.12 上执行 lint、80% 覆盖率门禁、基线回归门禁、依赖漏洞扫描、License 检查、Bandit 和 Docker 健康检查。
 
 > 如果受限 Windows 沙箱阻止 pytest 创建临时目录，可预先创建 `data/pytest-runtime` 并设置 `RAG_LAB_TEST_DIR` 指向它。
 
