@@ -68,7 +68,7 @@ _POLICY_GENERIC_TERMS = frozenset(
 )
 # Bigrams crossing question particles (e.g. "有什", "少人", "盐那") are
 # retrieval noise, not question subjects.
-_FOCUS_NOISE_CHARS = frozenset("的了吗呢吧啊是有这那哪什么多少几")
+_FOCUS_NOISE_CHARS = frozenset("的了吗呢吧啊是有这那哪什么多少几目前")
 
 # Generic words that make almost any policy chunk look relevant. They should
 # not count as evidence that the answer addresses the question's subject.

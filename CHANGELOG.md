@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented here. The format loosely follows Keep a Changelog and the project uses semantic versioning.
 
+## [1.3.4] - 2026-11-25
+
+### Fixed
+
+- Exact quoted document titles are now used as a retrieval signal, even when the question does not name an article. Large formula-heavy policy chunks no longer bury the requested document.
+- `title + 第X条` questions pull the matching article chunk to the front of retrieval, then restrict extraction to the article-bearing chunk.
+- Query normalization preserves `《...》` titles verbatim; “第三次全国残疾人抽样调查” is no longer rewritten to “第3次…”, which broke exact-title matching.
+- Extractive answers skip document titles, TOC headings and promulgation preambles, and prioritize `第X条`, “到2030年” target paragraphs and numbered task paragraphs.
+- The primary citation now comes from the top retrieved chunk; a secondary source is only used when it adds a missing facet.
+- Verified all 50 policy questions produce a non-refusal answer at the current `as_of` (2026-11-25).
+
 ## [1.3.3] - 2026-11-25
 
 ### Fixed

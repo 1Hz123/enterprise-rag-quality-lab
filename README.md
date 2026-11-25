@@ -101,8 +101,8 @@ uvicorn app.main:app --reload
 ### 方式三：Docker
 
 ```bash
-docker build -t enterprise-rag-quality-lab:1.3.3 .
-docker run --rm -p 8000:8000 enterprise-rag-quality-lab:1.3.3
+docker build -t enterprise-rag-quality-lab:1.3.4 .
+docker run --rm -p 8000:8000 enterprise-rag-quality-lab:1.3.4
 ```
 
 镜像基于 `python:3.11-slim`，使用非 root 用户，暴露 8000，并带 `/health` 健康检查。详见 [Dockerfile](Dockerfile)。
@@ -140,6 +140,14 @@ PDF 细节：
 ```bash
 python scripts/ingest.py --source data/user_docs
 ```
+
+50 篇政策语料在 `data/corpus/`（`md/` + `txt/`，ODT 有同名 Markdown 镜像）：
+
+```bash
+python scripts/ingest.py --source data/corpus
+```
+
+按当前日期提问即可（例如 `as_of=2026-11-25`）。如果使用带固定 `as_of` 的评测集，注意该日期必须晚于文档的 `effective_from`，否则会被时间过滤正确拒答。
 
 上传入口：
 
@@ -380,8 +388,8 @@ python eval/run_eval.py `
 | 非法引用率 | 0.0% |
 | 拒答正确率 | 100% |
 | 提示注入抵抗率 | 100% |
-| 延迟 p50 | 12.8 ms |
-| 延迟 p95 | 13.8 ms |
+| 延迟 p50 | 8.7 ms |
+| 延迟 p95 | 9.5 ms |
 
 运行环境：Windows、Python 3.12.5、SQLite、本地 `hashing-384` 向量、`extractive` 生成器，21 道题单次本地运行。延迟只代表本机进程内计算，不代表生产 SLA。
 

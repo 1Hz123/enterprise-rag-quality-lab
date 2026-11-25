@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 
 from app.config import Settings
 from app.knowledge.embeddings import lexical_tokens
-from app.rag.intent import focus_tokens, question_aspects
+from app.rag.intent import article_terms, focus_tokens, question_aspects
 from app.rag.prompt import (
     NO_CONTEXT_ANSWER,
     ContextItem,
@@ -28,6 +28,17 @@ from app.rag.prompt import (
 _SENTENCE_RE = re.compile(r"(?<=[。！？!?；;])\s*|(?<=[.!?])\s+|\n+")
 _BULLET_RE = re.compile(r"^\s{0,3}(?:[-*+•]|\d+[.)])\s+")
 _CONTROVERSY_RE = re.compile(r"^(?:备注[:：])?争议[。.!?]?$")
+_METADATA_RE = re.compile(
+    r"^(标题[:：]|来源[:：]|发布日期[:：]|发文字号[:：]|（此件公开发布）|"
+    r"中华人民共和国国务院令|国务院办公厅关于开展$|第[一二三四五六七八九十百零〇两\d]+号$|"
+    r".*的通知[。.]?$)"
+)
+_PREAMBLE_RE = re.compile(
+    r"^(现将|国务院关于印发|.*印发给你们|.*已经.*会议|.*现予公布|.*此件公开发布)"
+)
+_TOC_RE = re.compile(
+    r"^(?:[一二三四五六七八九十]+、|\d+(?:\.\d+)*\s+)[^。]{0,40}[。.]?$"
+)
 _CITATION_RE = re.compile(r"\[(\d{1,2})\]")
 _REFERENCE_RE = re.compile(r"https?://|doi\.org|\bdoi\b|^来源[:：]|^参考文献")
 _NUMERIC_INTENT_TERMS = (
@@ -115,12 +126,33 @@ def _sentence_score(question: str, sentence: str, item: ContextItem) -> float:
     title_tokens = set(lexical_tokens(item.chunk.title))
     title_coverage = len(query_tokens.intersection(title_tokens)) / len(query_tokens)
 
+    article_bonus = 0.0
+    for article in article_terms(question):
+        if sentence.lstrip().startswith(article):
+            article_bonus = 0.50
+            break
+        if article in sentence:
+            article_bonus = max(article_bonus, 0.15)
+
+    policy_intent_bonus = 0.0
+    if any(term in question for term in ("主要目标", "目标是什么", "到2030年")) and (
+        "到2030年" in sentence or "目标" in sentence
+    ):
+        policy_intent_bonus = 0.25
+    if any(term in question for term in ("主要部署", "哪些任务", "重点任务")):
+        if re.match(r"^[（(]?[一二三四五六七八九十\d]+[）)、.]", sentence.strip()):
+            policy_intent_bonus = 0.55
+        elif "任务" in sentence or "工作要求" in sentence:
+            policy_intent_bonus = 0.30
+
     return (
         0.45 * coverage
         + 0.23 * density
         + 0.25 * item.chunk.score
         + 0.05 * title_coverage
         + _numeric_signal(question, sentence)
+        + article_bonus
+        + policy_intent_bonus
     )
 
 
@@ -140,7 +172,7 @@ class ExtractiveGenerator:
         self.max_answer_chars = max_answer_chars
         self.max_sentences = max_sentences
         self.cache_signature = (
-            f"extractive:v3:max_answer_chars={max_answer_chars}:"
+            f"extractive:v10:max_answer_chars={max_answer_chars}:"
             f"max_sentences={max_sentences}"
         )
 
@@ -149,11 +181,21 @@ class ExtractiveGenerator:
         seen: set[str] = set()
         aspects = question_aspects(question)
         query_focus = set(focus_tokens(question))
+        articles = article_terms(question)
 
         for item in items:
+            if articles and not any(article in item.text for article in articles):
+                continue
             for sentence in _sentences(item.text):
                 normalized = re.sub(r"\s+", "", sentence)
-                if normalized in seen or _REFERENCE_RE.search(sentence):
+                if (
+                    normalized in seen
+                    or _REFERENCE_RE.search(sentence)
+                    or _METADATA_RE.match(sentence.strip())
+                    or _PREAMBLE_RE.match(sentence.strip())
+                    or _TOC_RE.match(sentence.strip())
+                    or sentence.strip() == (item.chunk.title or "").strip()
+                ):
                     continue
                 seen.add(normalized)
                 score = _sentence_score(question, sentence, item)
@@ -179,7 +221,7 @@ class ExtractiveGenerator:
             }
 
         limit = self.max_sentences if len(aspects) > 1 else min(3, self.max_sentences)
-        primary_index = candidates[0][1].index
+        primary_index = items[0].index if items else candidates[0][1].index
         primary_pool = [
             candidate for candidate in candidates if candidate[1].index == primary_index
         ]
@@ -195,7 +237,22 @@ class ExtractiveGenerator:
 
         # If the primary chunk covers every facet, do not cite a second source
         # merely to pad the answer; that was the main citation-precision leak.
-        remaining = list(primary_pool if covers_all_aspects(primary_pool) else candidates)
+        conclusion_in_primary = "结论" in question and any(
+            "结论" in candidate[2] for candidate in primary_pool
+        )
+        latin_focus = {token for token in query_focus if re.search(r"[a-zA-Z]", token)}
+        primary_focus_ok = not latin_focus or any(
+            any(token.lower() in candidate[2].lower() for token in latin_focus)
+            for candidate in primary_pool
+        )
+        remaining = list(
+            primary_pool
+            if (
+                covers_all_aspects(primary_pool) or conclusion_in_primary
+            )
+            and primary_focus_ok
+            else candidates
+        )
         while remaining and len(selected) < limit:
             if selected:
                 # Prefer the top-ranked context item when it already covers an

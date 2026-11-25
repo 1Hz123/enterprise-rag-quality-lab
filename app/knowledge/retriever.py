@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date
@@ -13,6 +14,9 @@ from typing import Any
 from app.core.cache import CacheManager, CacheRequest
 from app.db import Database
 from app.knowledge.embeddings import EmbeddingModel, cosine_similarity, lexical_tokens
+
+_QUOTED_TITLE_RE = re.compile(r"《([^》]{4,})》")
+_ARTICLE_RE = re.compile(r"第[一二三四五六七八九十百千万零〇两\d]+条")
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,7 +203,7 @@ class Retriever:
         key = self.cache.key(
             "retrieval",
             {
-                "retrieval_schema": 1,
+                "retrieval_schema": 2,
                 "query": query,
                 "top_k": top_k,
                 "document_ids": ids,
@@ -311,5 +315,49 @@ class Retriever:
                 )
             )
 
+        # Exact title + article references are a stronger signal than BM25
+        # ranking. Pull the matching chunk to the front so long policy
+        # documents cannot bury “第十九条” under other articles.
+        title_match = _QUOTED_TITLE_RE.search(query)
+        article_match = _ARTICLE_RE.search(query)
+        exact: list[RetrievedChunk] = []
+        if title_match:
+            compact_title = re.sub(r"\s+", "", title_match.group(1))
+            compact_article = (
+                re.sub(r"\s+", "", article_match.group(0)) if article_match else ""
+            )
+            for row in rows:
+                document_label = re.sub(
+                    r"\s+",
+                    "",
+                    f"{row['title']} {row['source']}",
+                )
+                content = re.sub(r"\s+", "", row["content"])
+                article_ok = not compact_article or compact_article in content
+                if compact_title in document_label and article_ok:
+                    exact.append(
+                        RetrievedChunk(
+                            chunk_id=row["chunk_id"],
+                            document_id=row["document_id"],
+                            title=row["title"],
+                            source=row["source"],
+                            ordinal=int(row["ordinal"]),
+                            section=row["section"],
+                            policy_key=row["policy_key"],
+                            version=row["version"],
+                            effective_from=row["effective_from"],
+                            effective_until=row["effective_until"],
+                            content=row["content"],
+                            score=1.0,
+                            vector_score=0.0,
+                            lexical_score=1.0,
+                        )
+                    )
+
         scored.sort(key=lambda chunk: (-chunk.score, chunk.chunk_id))
+        if exact:
+            exact_ids = {chunk.chunk_id for chunk in exact}
+            return (exact + [chunk for chunk in scored if chunk.chunk_id not in exact_ids])[
+                :top_k
+            ]
         return scored[:top_k]

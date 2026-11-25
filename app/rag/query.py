@@ -24,6 +24,7 @@ _CN_NUMBER_RE = re.compile(
     r"(?P<number>[零〇一二两三四五六七八九十百]+)"
     r"(?P<unit>个工作日|个月|年|天|个|小时|分钟|周|次|人|元)"
 )
+_QUOTED_TITLE_RE = re.compile(r"《[^》]+》")
 
 
 def _cn_to_int(value: str) -> int:
@@ -59,6 +60,18 @@ def normalize_query(query: str) -> str:
     documents that use Arabic numerals.
     """
 
-    normalized = normalize_for_retrieval(query)
+    # Do not turn a title such as “第三次全国残疾人抽样调查” into “第3次…”;
+    # exact-title retrieval must match the document title byte-for-byte.
+    titles: list[str] = []
+
+    def protect_title(match: re.Match[str]) -> str:
+        placeholder = f"__ragtitle{len(titles)}__"
+        titles.append(match.group(0))
+        return placeholder
+
+    protected = _QUOTED_TITLE_RE.sub(protect_title, query)
+    normalized = normalize_for_retrieval(protected)
     normalized = _CN_NUMBER_RE.sub(_replace_chinese_number, normalized)
+    for index, title in enumerate(titles):
+        normalized = normalized.replace(f"__ragtitle{index}__", title)
     return re.sub(r"\s+", " ", normalized).strip()
