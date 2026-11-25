@@ -28,6 +28,43 @@ LEAVE_TYPES = (
 )
 _GENERIC_LEAVE_TERMS = ("假期", "休假", "请假")
 _QUANTITY_TERMS = ("多少天", "几天", "多少", "天数", "多长时间")
+_TITLE_RE = re.compile(r"《([^》]{4,})》")
+_POLICY_GENERIC_TERMS = frozenset(
+    {
+        "国务",
+        "务院",
+        "院办",
+        "办公",
+        "公厅",
+        "厅关",
+        "关于",
+        "于加",
+        "加强",
+        "强中",
+        "中小",
+        "小企",
+        "业回",
+        "款难",
+        "难问",
+        "题治",
+        "治理",
+        "关工",
+        "工作",
+        "通知",
+        "主要",
+        "要部",
+        "部署",
+        "些任",
+        "任务",
+        "规定",
+        "有关",
+        "意见",
+        "于进",
+        "进一",
+        "一步",
+        "步加",
+    }
+)
 # Bigrams crossing question particles (e.g. "有什", "少人", "盐那") are
 # retrieval noise, not question subjects.
 _FOCUS_NOISE_CHARS = frozenset("的了吗呢吧啊是有这那哪什么多少几")
@@ -109,6 +146,25 @@ def focus_tokens(question: str) -> list[str]:
 _ASPECT_SPLIT_RE = re.compile(r"[：:，,、；;]\s*")
 
 
+def title_focus_terms(question: str) -> list[str]:
+    """Distinctive subject terms from a quoted policy/document title.
+
+    “国务院办公厅……通知” contains many generic government words. Without this
+    guard, any chunk mentioning “通知/工作/治理” can look relevant to an
+    unrelated policy title.
+    """
+
+    for match in _TITLE_RE.finditer(question):
+        terms = [
+            token
+            for token in focus_tokens(match.group(1))
+            if token not in _POLICY_GENERIC_TERMS
+        ]
+        if terms:
+            return terms
+    return []
+
+
 def question_aspects(question: str) -> list[frozenset[str]]:
     """Split a multi-part question into its separately answerable facets."""
 
@@ -152,6 +208,9 @@ def answer_covers_focus(question: str, answer: str) -> bool:
     questions; each facet needs at least one supporting term in the answer.
     """
 
+    title_terms = title_focus_terms(question)
+    if title_terms and not all(term in answer for term in title_terms):
+        return False
     aspects = question_aspects(question)
     if not aspects:
         return True

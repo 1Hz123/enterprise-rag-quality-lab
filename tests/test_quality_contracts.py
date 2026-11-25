@@ -58,6 +58,22 @@ def test_citation_contains_verified_sentence_quote(seeded_client):
     assert citation["quote"] in citation["snippet"] or citation["quote"][:20] in citation["snippet"]
 
 
+def test_policy_title_without_matching_document_refuses(seeded_client):
+    question = "《国务院办公厅关于加强中小企业回款难问题治理有关工作的通知》主要部署了哪些任务？"
+    response = seeded_client.post(
+        "/api/v1/chat",
+        json={"question": question, "as_of": "2026-06-01"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["refused"] is True
+    assert payload["citations"] == []
+    assert payload["experience_ids"] == []
+    assert "中小学生" not in payload["answer"]
+    assert "睡眠" not in payload["answer"]
+
+
 def test_generic_leave_question_asks_for_clarification(seeded_client):
     response = seeded_client.post(
         "/api/v1/chat",

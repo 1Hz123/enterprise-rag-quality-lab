@@ -21,6 +21,7 @@ from app.rag.intent import (
     CLARIFICATION_ANSWER,
     focus_coverage,
     is_ambiguous_leave_question,
+    title_focus_terms,
 )
 from app.rag.prompt import (
     INJECTION_ANSWER,
@@ -214,12 +215,17 @@ class RAGPipeline:
             prepared,
             (chunk.content for chunk in retrieved),
         )
+        title_terms = title_focus_terms(prepared)
+        context_text = "\n".join(chunk.content for chunk in retrieved)
+        title_match = all(term in context_text for term in title_terms)
         base_metrics: dict[str, Any] = {
             "retrieval_top_score": top_score,
             "retrieval_top_lexical_score": top_lexical_score,
             "query_coverage": round(query_coverage, 4),
             "focus_tokens": focus,
             "focus_coverage": round(focus_coverage_value, 4),
+            "title_terms": title_terms,
+            "title_match": title_match,
             "retrieved_count": len(retrieved),
             "citation_count": 0,
             "context_chars": 0,
@@ -232,9 +238,18 @@ class RAGPipeline:
         low_semantic_score = top_score < self.settings.min_retrieval_score
         low_query_coverage = query_coverage < self.settings.min_query_coverage
         no_focus_hit = bool(focus) and focus_coverage_value <= 0.0
-        if not retrieved or low_semantic_score or low_query_coverage or no_focus_hit:
+        title_mismatch = bool(title_terms) and not title_match
+        if (
+            not retrieved
+            or low_semantic_score
+            or low_query_coverage
+            or no_focus_hit
+            or title_mismatch
+        ):
             if not retrieved:
                 refusal_reason = "no_retrieval"
+            elif title_mismatch:
+                refusal_reason = "title_mismatch"
             elif low_query_coverage:
                 refusal_reason = "low_query_coverage"
             elif no_focus_hit:

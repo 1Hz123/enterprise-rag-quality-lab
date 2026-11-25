@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here. The format loosely follows Keep a Changelog and the project uses semantic versioning.
 
+## [1.3.2] - 2026-11-25
+
+### Fixed
+
+- Quoted policy/document titles now get a subject guard: a question about 《国务院办公厅关于加强中小企业回款难问题治理有关工作的通知》 no longer passes because unrelated chunks mention “通知/工作/治理”.
+- `title_focus_terms()` extracts distinctive title terms while dropping generic government words; retrieval and answer relevance must match them.
+- A missing title returns a safe refusal and is never saved as an experience.
+- Added regression coverage for the SME receivables notice question.
+
 ## [1.3.1] - 2026-11-24
 
 ### Fixed

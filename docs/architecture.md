@@ -363,12 +363,14 @@ CI 还以 `eval/results/baseline.json` 为参照，要求 pass/hit/citation 不�
 
 ### 问题焦点与答案相关性
 
-引用真实不等于回答切题。v1.2.1 增加 `app/rag/intent.py`：
+引用真实不等于回答切题。v1.2.1 起增加 `app/rag/intent.py`，v1.3.2 增加政策标题守卫：
 
 - `focus_tokens()` 去掉“员工/公司/多少/几天/需要/标准”等泛化词，只保留能定位问题主体的词。
+- `title_focus_terms()` 从 `《...》` 标题中去掉“国务院办公厅/关于/加强/通知/工作/治理/任务”等泛化词，要求检索和答案命中“回款”这类主题词。
 - `is_ambiguous_leave_question()` 识别“假期是多少天”这类没有具体假期类型的问题，直接返回澄清答案。
-- `focus_coverage()` 检查检索结果是否命中焦点词；零命中则拒答，避免把“病假工资”当成“假期天数”。
-- `answer_covers_focus()` 由 Auditor 检查最终答案是否覆盖问题焦点；不覆盖则 `answer_relevant=false`，质量分封顶 0.5，不沉淀经验。
+- `focus_coverage()` 检查检索结果是否命中焦点词；零命中或标题主题词缺失则拒答，避免把“病假工资”当成“假期天数”。
+- `question_aspects()` 把“多少人、多少年、风险、争议”拆成多个 facet；生成器优先覆盖新 facet。
+- `answer_covers_focus()` 由 Auditor 检查最终答案是否覆盖全部 facet 和标题主题词；不覆盖则 `answer_relevant=false`，质量分封顶 0.5，不沉淀经验。
 
 这是规则/词面相关性守卫，不是语义 NLI：同义改写的泛化问题仍可能被误拒，需要后续用 embedding 或小模型 judge 替换，并单独评测误拒率。
 

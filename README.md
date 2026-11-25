@@ -47,11 +47,12 @@
 
 ### 问题焦点与答案相关性
 
-只校验“引用真实存在”不够：一段关于病假工资的真实引用，也可能答非所问。v1.2.1 增加三层相关性防线：
+只校验“引用真实存在”不够：一段关于病假工资的真实引用，也可能答非所问。v1.2.1 起逐步增加四层相关性防线：
 
 1. **宽泛假期先澄清**：问题包含“假期/休假/请假”且询问天数，但没有年假、病假、婚假、产假、丧假、事假、调休等具体类型时，返回澄清答案，不检索、不生成、不沉淀经验。
 2. **检索焦点守卫**：从问题中提取去掉“员工/公司/多少/几天/需要”等泛化词后的焦点词；如果检索结果没有任何焦点词命中，返回拒答，而不是硬答。
-3. **Auditor 答案相关性**：回答必须至少覆盖一个焦点词，否则 `answer_relevant=false`，整次审计不通过，质量分压到 0.5，不进入经验库。旧的答非所问经验复用时也会被拒绝并删除。
+3. **政策标题守卫**：从 `《...》` 标题中提取去掉“国务院办公厅/关于/加强/通知/工作/治理/任务”等泛化词后的主题词。例如《国务院办公厅关于加强中小企业回款难问题治理有关工作的通知》要求检索和答案至少命中“回款”；只在“通知/工作”上相似不算。
+4. **Auditor 答案相关性**：回答必须覆盖全部问题 facet（以及标题主题词），否则 `answer_relevant=false`，整次审计不通过，质量分压到 0.5，不进入经验库。旧的答非所问经验复用时也会被拒绝并删除。
 
 例如：
 
@@ -100,8 +101,8 @@ uvicorn app.main:app --reload
 ### 方式三：Docker
 
 ```bash
-docker build -t enterprise-rag-quality-lab:1.3.1 .
-docker run --rm -p 8000:8000 enterprise-rag-quality-lab:1.3.1
+docker build -t enterprise-rag-quality-lab:1.3.2 .
+docker run --rm -p 8000:8000 enterprise-rag-quality-lab:1.3.2
 ```
 
 镜像基于 `python:3.11-slim`，使用非 root 用户，暴露 8000，并带 `/health` 健康检查。详见 [Dockerfile](Dockerfile)。
@@ -549,7 +550,7 @@ python -m ruff check .
 python -m pytest --cov=app --cov-report=term-missing
 ```
 
-当前测试：73 项、覆盖率 81.7%，覆盖 API CRUD、聊天引用、拒答、运行轨迹、切块、检索、21 题评测、制度版本、中文数字、chunk 元数据透传、代码块/GBK/英文分句、PDF 文本提取与上传、多要素 PDF 问答、原始非法引用审计、fingerprint 判重、版本快照、句子级 quote、经验跨天复用、Redis 三层缓存（命中/未命中/TTL/序列化/降级/冷却/SCAN 清理/singleflight）、缓存开关对照评测、宽泛假期澄清、答案相关性审计、智能体协作和注入防护。CI 使用锁定依赖在 Python 3.12 上执行 lint、80% 覆盖率门禁、基线回归门禁、依赖漏洞扫描、License 检查、Bandit 和 Docker 健康检查。
+当前测试：74 项、覆盖率 81.7%，覆盖 API CRUD、聊天引用、拒答、运行轨迹、切块、检索、21 题评测、制度版本、中文数字、chunk 元数据透传、代码块/GBK/英文分句、PDF 文本提取与上传、多要素 PDF 问答、政策标题守卫、原始非法引用审计、fingerprint 判重、版本快照、句子级 quote、经验跨天复用、Redis 三层缓存（命中/未命中/TTL/序列化/降级/冷却/SCAN 清理/singleflight）、缓存开关对照评测、宽泛假期澄清、答案相关性审计、智能体协作和注入防护。CI 使用锁定依赖在 Python 3.12 上执行 lint、80% 覆盖率门禁、基线回归门禁、依赖漏洞扫描、License 检查、Bandit 和 Docker 健康检查。
 
 > 如果受限 Windows 沙箱阻止 pytest 创建临时目录，可预先创建 `data/pytest-runtime` 并设置 `RAG_LAB_TEST_DIR` 指向它。
 
