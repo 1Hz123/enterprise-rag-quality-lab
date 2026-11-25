@@ -69,7 +69,15 @@ class AuditorAgent:
             )
             checks["no_invalid_citations"] = result.invalid_citation_count == 0
             question = plan.subtasks[0].question if plan.subtasks else ""
-            checks["answer_relevant"] = answer_covers_focus(question, result.answer)
+            citation_context = "\n".join(
+                f"{citation.title}\n{citation.section}\n{citation.snippet}"
+                for citation in result.citations
+            )
+            checks["answer_relevant"] = answer_covers_focus(
+                question,
+                result.answer,
+                context=citation_context,
+            )
             checks["temporal_valid"] = self._temporal_valid(plan, result, sub_answers)
             checks["multi_task_coverage"] = self._multi_task_coverage(plan, sub_answers)
             checks["security_clear"] = not result.security_blocked

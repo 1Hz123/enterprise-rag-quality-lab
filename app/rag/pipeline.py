@@ -19,6 +19,7 @@ from app.knowledge.splitter import estimate_tokens
 from app.rag.generator import Generation, Generator
 from app.rag.intent import (
     CLARIFICATION_ANSWER,
+    article_terms,
     focus_coverage,
     is_ambiguous_leave_question,
     title_focus_terms,
@@ -216,8 +217,17 @@ class RAGPipeline:
             (chunk.content for chunk in retrieved),
         )
         title_terms = title_focus_terms(prepared)
-        context_text = "\n".join(chunk.content for chunk in retrieved)
+        articles = article_terms(prepared)
+        context_text = re.sub(
+            r"\s+",
+            "",
+            "\n".join(
+                f"{chunk.title}\n{chunk.section}\n{chunk.content}"
+                for chunk in retrieved
+            ),
+        )
         title_match = all(term in context_text for term in title_terms)
+        article_match = all(article in context_text for article in articles)
         base_metrics: dict[str, Any] = {
             "retrieval_top_score": top_score,
             "retrieval_top_lexical_score": top_lexical_score,
@@ -226,6 +236,8 @@ class RAGPipeline:
             "focus_coverage": round(focus_coverage_value, 4),
             "title_terms": title_terms,
             "title_match": title_match,
+            "article_terms": articles,
+            "article_match": article_match,
             "retrieved_count": len(retrieved),
             "citation_count": 0,
             "context_chars": 0,
@@ -239,17 +251,25 @@ class RAGPipeline:
         low_query_coverage = query_coverage < self.settings.min_query_coverage
         no_focus_hit = bool(focus) and focus_coverage_value <= 0.0
         title_mismatch = bool(title_terms) and not title_match
+        article_mismatch = bool(articles) and not article_match
+        strong_reference = (
+            bool(title_terms or articles) and title_match and article_match
+        )
         if (
             not retrieved
-            or low_semantic_score
-            or low_query_coverage
-            or no_focus_hit
             or title_mismatch
+            or article_mismatch
+            or (
+                not strong_reference
+                and (low_semantic_score or low_query_coverage or no_focus_hit)
+            )
         ):
             if not retrieved:
                 refusal_reason = "no_retrieval"
             elif title_mismatch:
                 refusal_reason = "title_mismatch"
+            elif article_mismatch:
+                refusal_reason = "article_mismatch"
             elif low_query_coverage:
                 refusal_reason = "low_query_coverage"
             elif no_focus_hit:

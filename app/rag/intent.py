@@ -27,7 +27,8 @@ LEAVE_TYPES = (
     "公休",
 )
 _GENERIC_LEAVE_TERMS = ("假期", "休假", "请假")
-_QUANTITY_TERMS = ("多少天", "几天", "多少", "天数", "多长时间")
+_QUANTITY_TERMS = ("多少天", "几天", "多久", "多少", "天数", "多长时间")
+_ARTICLE_RE = re.compile(r"第[一二三四五六七八九十百千万零〇两\d]+条")
 _TITLE_RE = re.compile(r"《([^》]{4,})》")
 _POLICY_GENERIC_TERMS = frozenset(
     {
@@ -146,6 +147,12 @@ def focus_tokens(question: str) -> list[str]:
 _ASPECT_SPLIT_RE = re.compile(r"[：:，,、；;]\s*")
 
 
+def article_terms(question: str) -> list[str]:
+    """Extract explicit article references such as “第十九条”."""
+
+    return list(dict.fromkeys(_ARTICLE_RE.findall(question)))
+
+
 def title_focus_terms(question: str) -> list[str]:
     """Distinctive subject terms from a quoted policy/document title.
 
@@ -201,18 +208,24 @@ def focus_coverage(question: str, texts: Iterable[str]) -> tuple[list[str], floa
     return focus, len(hits) / len(focus)
 
 
-def answer_covers_focus(question: str, answer: str) -> bool:
+def answer_covers_focus(question: str, answer: str, *, context: str = "") -> bool:
     """Whether the answer covers every separately asked facet.
 
     A single focus hit is not enough for “多少人、多少年、风险、争议” style
-    questions; each facet needs at least one supporting term in the answer.
+    questions; each facet needs at least one supporting term. ``context`` may
+    contain citation titles/sections, because a valid answer often omits the
+    full official title that the question quoted.
     """
 
+    compact_answer = re.sub(r"\s+", "", f"{answer}\n{context}")
     title_terms = title_focus_terms(question)
-    if title_terms and not all(term in answer for term in title_terms):
+    if title_terms and not all(term in compact_answer for term in title_terms):
+        return False
+    articles = article_terms(question)
+    if articles and not all(article in compact_answer for article in articles):
         return False
     aspects = question_aspects(question)
     if not aspects:
         return True
-    answer_tokens = set(lexical_tokens(answer))
+    answer_tokens = set(lexical_tokens(f"{answer}\n{context}"))
     return all(bool(aspect.intersection(answer_tokens)) for aspect in aspects)

@@ -75,9 +75,56 @@ def test_policy_title_without_matching_document_refuses(seeded_client):
 
 
 def test_generic_leave_question_asks_for_clarification(seeded_client):
+    for question in ("员工的假期是多少天", "员工的假期是多久"):
+        response = seeded_client.post(
+            "/api/v1/chat",
+            json={"question": question, "as_of": "2026-06-01"},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["refused"] is True
+        assert payload["citations"] == []
+        assert payload["experience_ids"] == []
+        assert "年假" in payload["answer"]
+        assert "病假" in payload["answer"]
+
+
+def test_law_article_with_matching_document_answers(seeded_client):
+    created = seeded_client.post(
+        "/api/v1/documents",
+        json={
+            "title": "中华人民共和国药品管理法实施条例",
+            "content": (
+                "# 中华人民共和国药品管理法实施条例\n\n"
+                "第十九条 禁止生产、销售假药；禁止生产、销售劣药；"
+                "禁止伪造、变造、买卖、出租、出借药品批准证明文件。"
+            ),
+            "content_type": "text/markdown",
+            "metadata": {},
+        },
+    )
+    assert created.status_code == 201
+
+    question = "《中华人民共和国药品管理法实施条例》第十九条明确了哪些禁止性规定？"
     response = seeded_client.post(
         "/api/v1/chat",
-        json={"question": "员工的假期是多少天", "as_of": "2026-06-01"},
+        json={"question": question, "as_of": "2026-06-01"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["refused"] is False
+    assert payload["citations"]
+    assert "第十九条" in payload["answer"]
+    assert "假药" in payload["answer"]
+
+
+def test_law_article_without_matching_document_refuses(seeded_client):
+    question = "《中华人民共和国药品管理法实施条例》第十九条明确了哪些禁止性规定？"
+    response = seeded_client.post(
+        "/api/v1/chat",
+        json={"question": question, "as_of": "2026-06-01"},
     )
 
     assert response.status_code == 200
@@ -85,8 +132,8 @@ def test_generic_leave_question_asks_for_clarification(seeded_client):
     assert payload["refused"] is True
     assert payload["citations"] == []
     assert payload["experience_ids"] == []
-    assert "年假" in payload["answer"]
-    assert "病假" in payload["answer"]
+    assert "残疾" not in payload["answer"]
+    assert "睡眠" not in payload["answer"]
 
 
 def test_experience_can_be_reused_across_days_for_open_policy_window(seeded_client):

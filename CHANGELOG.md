@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here. The format loosely follows Keep a Changelog and the project uses semantic versioning.
 
+## [1.3.3] - 2026-11-25
+
+### Fixed
+
+- “员工的假期是多久” is now recognized as an ambiguous leave question (added “多久” to the quantity terms) and returns a clarification instead of sick-pay text.
+- Explicit article references such as “第十九条” are now a hard retrieval/answer constraint. A law title plus article cannot be answered by an unrelated document that merely contains “通知/条例/第十九条”.
+- Title/article matching ignores whitespace, so line-wrapped titles and articles still match.
+- Added regression coverage for the drug administration regulation article question.
+
 ## [1.3.2] - 2026-11-25
 
 ### Fixed
